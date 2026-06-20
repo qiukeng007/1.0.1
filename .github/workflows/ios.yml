@@ -125,4 +125,81 @@ jobs:
           ruby patch_target.rb
           
           mkdir -p ios/Flutter
-          echo "IPHONEOS_DEPLOYMENT_TARGET=16.0" >> ios/Flutter/Generated.
+          echo "IPHONEOS_DEPLOYMENT_TARGET=16.0" >> ios/Flutter/Generated.xcconfig
+          echo "CODE_SIGNING_ALLOWED=NO" >> ios/Flutter/Generated.xcconfig
+          echo "CODE_SIGNING_REQUIRED=NO" >> ios/Flutter/Generated.xcconfig
+          echo "CODE_SIGN_IDENTITY=" >> ios/Flutter/Generated.xcconfig
+          
+          echo "IPHONEOS_DEPLOYMENT_TARGET=16.0" >> ios/Flutter/FlutterRelease.xcconfig
+          echo "CODE_SIGNING_ALLOWED=NO" >> ios/Flutter/FlutterRelease.xcconfig
+          echo "CODE_SIGNING_REQUIRED=NO" >> ios/Flutter/FlutterRelease.xcconfig
+          echo "CODE_SIGN_IDENTITY=" >> ios/Flutter/FlutterRelease.xcconfig
+
+      - name: 🛠️ 物理硬修 .pub-cache 中的插件底层源码 (单行安全注入版)
+        run: |
+          echo "=== 开始全局扫描并硬修本地缓存中的 DefaultCamera.swift ==="
+          find /Users/runner/.pub-cache/ -name "DefaultCamera.swift" 2>/dev/null | while read -r target_file; do
+            if [ -f "$target_file" ]; then
+              if ! grep -q "extension AVCaptureSession" "$target_file"; then
+                echo "发现目标文件: $target_file ，正在安全注入扩展..."
+                sudo chmod 664 "$target_file" || true
+                echo -e "\nimport AVFoundation\nextension AVCaptureSession {\n    @objc public static let wasInterruptedNotification = NSNotification.Name.AVCaptureSessionWasInterrupted\n    @objc public static let runtimeErrorNotification = NSNotification.Name.AVCaptureSessionRuntimeError\n}" >> "$target_file"
+                echo "🎉 已在本地缓存中无伤修复！"
+              fi
+            fi
+          done
+
+      - name: 强行剥离 macOS 隐藏属性
+        run: |
+          echo "=== 正在使用最高权限递归清理 FinderInfo / provenance 属性 ==="
+          sudo xattr -cr . || true
+
+      - name: Build Standard iOS Payload
+        run: |
+          echo "=== 开始执行 Xcode iOS 16.0 强化编译 ==="
+          
+          set +e
+          flutter build ios --release --no-codesign --verbose > xcode_build.log 2>&1
+          BUILD_STATUS=$?
+          set -e
+          
+          if [ $BUILD_STATUS -ne 0 ]; then
+            echo "❌ 编译遭遇硬伤！以下为最后 150 行原始上下文："
+            echo "----------------------------------------"
+            tail -n 150 xcode_build.log
+            echo "----------------------------------------"
+            exit 1
+          else
+            echo "🎉 真正的全线编译成功！核心二进制与本地资源生成完整！"
+          fi
+        
+      - name: ⚡ 深度扫描并自动化组装 IPA 包
+        run: |
+          echo "=== 开始启动雷达全盘检索编译产物 ==="
+          rm -rf final_zip
+          mkdir -p final_zip/Payload
+          
+          # 在整个 build 目录下深度寻找实体 Runner.app 文件夹
+          APP_PATH=$(find build/ios -name "Runner.app" -type d | head -n 1)
+          
+          if [ -n "$APP_PATH" ] && [ -d "$APP_PATH" ]; then
+            echo "🎯 雷达成功锁定产物路径: $APP_PATH"
+            echo "正在安全拷贝产物到打包夹..."
+            cp -r "$APP_PATH" final_zip/Payload/
+            
+            echo "正在生成标准的免签企业级预备包 (IPA)..."
+            cd final_zip
+            zip -r -y -q ready-to-sign.ipa Payload
+            cd ..
+            echo "🎉 IPA 物理组装完成，整装待发！"
+          else
+            echo "❌ 极度严重：全盘扫描未发现 Runner.app 实体，正在打印 build 树形结构排查原因："
+            find build/ios -maxdepth 4 || true
+            exit 1
+          fi
+          
+      - name: Upload Configured Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-release-app
+          path: final_zip/ready-to-sign.ipa
