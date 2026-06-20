@@ -64,17 +64,21 @@ jobs:
           EOF
           ruby prepend_monkey_patch.rb
           
-      - name: 强注 iOS 16.0 Target 与免签补丁
+      - name: 强注 iOS 16.0 Target 并拦截硬补 camera_avfoundation 源码
         run: |
           cat << 'EOF' > patch_target.rb
           podfile_path = 'ios/Podfile'
           if File.exist?(podfile_path)
             content = File.read(podfile_path)
+            
+            # 1. 修正全局 Target 平台
             if content.match?(/^\s*#?\s*platform :ios,/)
               content.gsub!(/^\s*#?\s*platform :ios,.*/, "platform :ios, '16.0'")
             else
               content = "platform :ios, '16.0'\n" + content
             end
+            
+            # 2. 注入针对编译选项的清理，并在 post_install 结束时通过 Ruby 直接魔改第三方插件源码
             target_str = 'flutter_additional_ios_build_settings(target)'
             patch = <<~RUBY
               flutter_additional_ios_build_settings(target)
@@ -86,11 +90,47 @@ jobs:
                     config.build_settings['PROVISIONING_PROFILE_SPECIFIER'] = ''
                   end
             RUBY
+            
             if content.include?(target_str) && !content.include?('IPHONEOS_DEPLOYMENT_TARGET')
               content.gsub!(target_str, patch)
             end
+            
+            # 3. 在 Podfile 的 post_install 尾部追加源码拦截补丁
+            unless content.include?('camera_avfoundation_source_fix')
+              source_fix_patch = <<~'RUBY_FIX'
+                
+                # === camera_avfoundation_source_fix begin ===
+                begin
+                  puts "🔍 正在检索 Pods 中的 camera_avfoundation 源码并注入编译器补丁..."
+                  target_file = Dir.glob("Pods/camera_avfoundation/**/DefaultCamera.swift").first
+                  if target_file && File.exist?(target_file)
+                    file_content = File.read(target_file)
+                    unless file_content.include?("extension AVCaptureSession")
+                      fix_code = <<~'SWIFT'
+                        
+                        // 全局编译器兼容性补丁
+                        import AVFoundation
+                        extension AVCaptureSession {
+                            @objc public static let wasInterruptedNotification = NSNotification.Name.AVCaptureSessionWasInterrupted
+                            @objc public static let runtimeErrorNotification = NSNotification.Name.AVCaptureSessionRuntimeError
+                        }
+                      SWIFT
+                      File.write(target_file, file_content + "\n" + fix_code)
+                      puts "🎉 已成功对 #{target_file} 物理注入 AVCaptureSession 兼容性补丁！"
+                    end
+                  else
+                    puts "⚠️ 未能在本地 Pods 目录中找到 DefaultCamera.swift，将在后期由 Pods 编译时尝试"
+                  end
+                rescue => e
+                  puts "❌ 修改源码失败: #{e.message}"
+                end
+                # === camera_avfoundation_source_fix end ===
+              RUBY_FIX
+              content += "\n" + source_fix_patch
+            end
+            
             File.open(podfile_path, 'w') { |f| f.write(content) }
-            puts 'Podfile 编译配置加固完成！'
+            puts 'Podfile 编译加固及源码拦截器配置完成！'
           end
           EOF
           ruby patch_target.rb
@@ -106,19 +146,28 @@ jobs:
           echo "CODE_SIGNING_REQUIRED=NO" >> ios/Flutter/FlutterRelease.xcconfig
           echo "CODE_SIGN_IDENTITY=" >> ios/Flutter/FlutterRelease.xcconfig
 
-      - name: 🛠️ 注入 AVCaptureSession 全局 Swift 兼容补丁
+      # 作为双保险：即便 Pod 还没完全跑完，我们提前在外部对 .pub-cache 目录下的包源文件进行全局替换
+      - name: 🛠️ 物理硬修 .pub-cache 中的插件底层源码
         run: |
-          echo "=== 正在注入全局 Swift 编译器补丁 ==="
-          cat << 'EOF' > ios/Runner/AVCaptureSession+Fix.swift
-          import AVFoundation
-          import Foundation
+          echo "=== 开始全局扫描并硬修本地缓存中的 DefaultCamera.swift ==="
+          find /Users/runner/.pub-cache/ -name "DefaultCamera.swift" 2>/dev/null | while read target_file; do
+            if [ -f "$target_file" ]; then
+              if ! grep -q "extension AVCaptureSession" "$target_file"; then
+                echo "发现目标文件: $target_file ，正在注入扩展结构..."
+                sudo chmod 664 "$target_file" || true
+                cat << 'EOF' >> "$target_file"
 
+          // 物理缓存编译器补丁
+          import AVFoundation
           extension AVCaptureSession {
               @objc public static let wasInterruptedNotification = NSNotification.Name.AVCaptureSessionWasInterrupted
               @objc public static let runtimeErrorNotification = NSNotification.Name.AVCaptureSessionRuntimeError
           }
           EOF
-          echo "🎉 兼容补丁已成功生成！"
+                echo "🎉 已在本地缓存中硬修完毕！"
+              fi
+            fi
+          done
 
       - name: 强行剥离 macOS 隐藏属性
         run: |
@@ -134,32 +183,4 @@ jobs:
           BUILD_STATUS=$?
           set -e
           
-          if [ $BUILD_STATUS -ne 0 ] || [ ! -d "build/ios/iphoneos/Runner.app" ]; then
-            echo "❌ 编译遭遇硬伤！以下为最后 150 行原始上下文："
-            echo "----------------------------------------"
-            tail -n 150 xcode_build.log
-            echo "----------------------------------------"
-            exit 1
-          else
-            echo "🎉 真正的全线编译成功！内容完整！"
-          fi
-        
-      - name: Zip Runner App
-        run: |
-          if [ -d "build/ios/iphoneos/Runner.app" ]; then
-            rm -rf final_zip
-            mkdir -p final_zip/Payload
-            cp -r build/ios/iphoneos/Runner.app final_zip/Payload/
-            cd final_zip
-            zip -r -y -q ready-to-sign.ipa Payload
-            echo "🎉 IPA 免签打包成功！"
-          else
-            echo "❌ 错误：构建产物未生成"
-            exit 1
-          fi
-          
-      - name: Upload Configured Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ios-release-app
-          path: final_zip/ready-to-sign.ipa
+          if [ $BUILD_STATUS -ne 0 ] ||
