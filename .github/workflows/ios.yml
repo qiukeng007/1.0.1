@@ -29,61 +29,53 @@ jobs:
           flutter clean
           flutter pub get
 
-      - name: 注入 Podfile 运行时内存劫持补丁
+      - name: 注入 Podfile 运行时拦截补丁 (核心：暴力降级 MLKit 约束)
         run: |
           cat << 'EOF' > prepend_monkey_patch.rb
           podfile_path = 'ios/Podfile'
           if File.exist?(podfile_path)
             original_content = File.read(podfile_path)
+            # 这里增加了对 google_mlkit_commons 的强制拦截，将其版本约束拉回 15.0
             monkey_patch_code = <<~'RUBY_PATCH'
-              # === MLKit Dependency Core Monkey Patch Begin ===
-              if defined?(::Pod::Dependency)
-                ::Pod::Dependency.class_eval do
-                  unless method_defined?(:original_initialize_mlkit)
-                    alias_method :original_initialize_mlkit, :initialize
-                    def initialize(*args, &block)
-                      if args[0].to_s.include?('GoogleMLKit/BarcodeScanning')
-                        args[1] = '~> 7.0.0'
-                        args = args[0..1]
-                      end
-                      original_initialize_mlkit(*args, &block)
+              # === Plugin Deployment Target Monkey Patch ===
+              if defined?(::Pod::Installer)
+                pre_install do |installer|
+                  installer.pod_targets.each do |target|
+                    if target.name.include?('google_mlkit_commons')
+                      target.platform.deployment_target = Pod::Version.new('15.0')
                     end
                   end
                 end
               end
-              # === MLKit Dependency Core Monkey Patch End ===
             RUBY_PATCH
             
-            unless original_content.include?("MLKit Dependency Core Monkey Patch")
+            unless original_content.include?("Plugin Deployment Target Monkey Patch")
               File.write(podfile_path, monkey_patch_code + "\n" + original_content)
             end
           end
           EOF
           ruby prepend_monkey_patch.rb
           
-      - name: 强注 iOS 15.2 Target 并拦截硬补 camera_avfoundation 源码
+      - name: 强注 iOS 15.0 Target 并拦截硬补 camera_avfoundation 源码
         run: |
           cat << 'EOF' > patch_target.rb
           podfile_path = 'ios/Podfile'
           if File.exist?(podfile_path)
             content = File.read(podfile_path)
             
-            # 统一降级为 15.2
+            # 统一强制设为 15.0
             if content.match?(/^\s*#?\s*platform :ios,/)
-              content.gsub!(/^\s*#?\s*platform :ios,.*/, "platform :ios, '15.2'")
+              content.gsub!(/^\s*#?\s*platform :ios,.*/, "platform :ios, '15.0'")
             else
-              content = "platform :ios, '15.2'\n" + content
+              content = "platform :ios, '15.0'\n" + content
             end
             
+            # 确保全局 Build Settings 都是 15.0
             target_str = 'flutter_additional_ios_build_settings(target)'
             patch = <<~RUBY
               flutter_additional_ios_build_settings(target)
                   target.build_configurations.each do |config|
-                    config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.2'
-                    config.build_settings['CODE_SIGNING_ALLOWED'] = 'NO'
-                    config.build_settings['CODE_SIGNING_REQUIRED'] = 'NO'
-                    config.build_settings['CODE_SIGN_IDENTITY'] = ''
-                    config.build_settings['PROVISIONING_PROFILE_SPECIFIER'] = ''
+                    config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
                   end
             RUBY
             
@@ -91,79 +83,34 @@ jobs:
               content.gsub!(target_str, patch)
             end
             
-            unless content.include?('camera_avfoundation_source_fix')
-              source_fix_patch = <<~'RUBY_FIX'
-                # === camera_avfoundation_source_fix begin ===
-                begin
-                  target_file = Dir.glob("Pods/camera_avfoundation/**/DefaultCamera.swift").first
-                  if target_file && File.exist?(target_file)
-                    file_content = File.read(target_file)
-                    unless file_content.include?("extension AVCaptureSession")
-                      fix_code = "\nimport AVFoundation\nextension AVCaptureSession {\n    @objc public static let wasInterruptedNotification = NSNotification.Name.AVCaptureSessionWasInterrupted\n    @objc public static let runtimeErrorNotification = NSNotification.Name.AVCaptureSessionRuntimeError\n}\n"
-                      File.write(target_file, file_content + "\n" + fix_code)
-                    end
-                  end
-                rescue => e
-                  puts "Fixing source failed: #{e.message}"
-                end
-                # === camera_avfoundation_source_fix end ===
-              RUBY_FIX
-              content += "\n" + source_fix_patch
-            end
-            
             File.open(podfile_path, 'w') { |f| f.write(content) }
           end
           EOF
           ruby patch_target.rb
           
-          mkdir -p ios/Flutter
-          echo "IPHONEOS_DEPLOYMENT_TARGET=15.2" >> ios/Flutter/Generated.xcconfig
-          echo "CODE_SIGNING_ALLOWED=NO" >> ios/Flutter/Generated.xcconfig
-          echo "CODE_SIGNING_REQUIRED=NO" >> ios/Flutter/Generated.xcconfig
-          echo "CODE_SIGN_IDENTITY=" >> ios/Flutter/Generated.xcconfig
-          
-          echo "IPHONEOS_DEPLOYMENT_TARGET=15.2" >> ios/Flutter/FlutterRelease.xcconfig
-          echo "CODE_SIGNING_ALLOWED=NO" >> ios/Flutter/FlutterRelease.xcconfig
-          echo "CODE_SIGNING_REQUIRED=NO" >> ios/Flutter/FlutterRelease.xcconfig
-          echo "CODE_SIGN_IDENTITY=" >> ios/Flutter/FlutterRelease.xcconfig
+          # 强制更新所有 xcconfig，确保不留死角
+          find ios -name "*.xcconfig" -exec sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = .*/IPHONEOS_DEPLOYMENT_TARGET = 15.2/g' {} +
 
       - name: 🛠️ 物理硬修 .pub-cache 中的插件底层源码
         run: |
           find /Users/runner/.pub-cache/ -name "DefaultCamera.swift" 2>/dev/null | while read -r target_file; do
-            if [ -f "$target_file" ]; then
-              if ! grep -q "extension AVCaptureSession" "$target_file"; then
-                sudo chmod 664 "$target_file" || true
-                echo -e "\nimport AVFoundation\nextension AVCaptureSession {\n    @objc public static let wasInterruptedNotification = NSNotification.Name.AVCaptureSessionWasInterrupted\n    @objc public static let runtimeErrorNotification = NSNotification.Name.AVCaptureSessionRuntimeError\n}" >> "$target_file"
-              fi
+            if ! grep -q "extension AVCaptureSession" "$target_file"; then
+              sudo chmod 664 "$target_file" || true
+              echo -e "\nimport AVFoundation\nextension AVCaptureSession {\n    @objc public static let wasInterruptedNotification = NSNotification.Name.AVCaptureSessionWasInterrupted\n    @objc public static let runtimeErrorNotification = NSNotification.Name.AVCaptureSessionRuntimeError\n}" >> "$target_file"
             fi
           done
 
-      - name: 强行剥离 macOS 隐藏属性
-        run: sudo xattr -cr . || true
-
       - name: Build Standard iOS Payload
         run: |
-          set +e
-          flutter build ios --release --no-codesign --verbose > xcode_build.log 2>&1
-          if [ $? -ne 0 ]; then
-            tail -n 150 xcode_build.log
-            exit 1
-          fi
-        
+          flutter build ios --release --no-codesign --verbose
+
       - name: ⚡ 自动化组装 IPA 包
         run: |
-          rm -rf final_zip
           mkdir -p final_zip/Payload
           APP_PATH=$(find build/ios -name "Runner.app" -type d | head -n 1)
-          if [ -n "$APP_PATH" ] && [ -d "$APP_PATH" ]; then
-            cp -r "$APP_PATH" final_zip/Payload/
-            cd final_zip
-            zip -r -y -q ready-to-sign.ipa Payload
-          else
-            find build/ios -maxdepth 4
-            exit 1
-          fi
-          
+          cp -r "$APP_PATH" final_zip/Payload/
+          cd final_zip && zip -r -y -q ready-to-sign.ipa Payload
+
       - name: Upload Configured Artifact
         uses: actions/upload-artifact@v4
         with:
