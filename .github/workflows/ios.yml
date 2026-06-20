@@ -36,14 +36,12 @@ jobs:
           if File.exist?(podfile_path)
             original_content = File.read(podfile_path)
             
-            # 利用 CocoaPods 原生 pre_install 钩子，在依赖解析的黄金窗口期进行强改
             patch_code = <<~'RUBY_PATCH'
               
               # === MLKit Version Conflict Fix Begin ===
               pre_install do |installer|
                 puts "⚡️ [MLKit Patch] 进入 pre_install 黄金窗口，开始强行对齐依赖..."
                 
-                # 同时扫描本地软链接目录和全局缓存目录，双保险确保无死角
                 search_patterns = [
                   File.expand_path('../.symlinks/plugins/**/*.podspec', __FILE__),
                   '/Users/runner/.pub-cache/**/*.podspec'
@@ -57,7 +55,6 @@ jobs:
                     if content.include?("GoogleMLKit/BarcodeScanning")
                       puts "⚡️ [MLKit Patch] 成功拦截冲突源文件: #{path}"
                       
-                      # 将各种顽固的旧版本号（如 ~> 6.0.0）强行抹平对齐到 ~> 7.0.0
                       new_content = content.gsub(/['"]GoogleMLKit\/BarcodeScanning['"]\s*,\s*['"][^'"]+['"]/, "'GoogleMLKit/BarcodeScanning', '~> 7.0.0'")
                       
                       if new_content != content
@@ -73,7 +70,6 @@ jobs:
             RUBY_PATCH
             
             unless original_content.include?("MLKit Version Conflict Fix")
-              # 追加到 Podfile 尾部，确保不破坏前面的 Flutter 变量声明
               File.write(podfile_path, original_content + "\n" + patch_code)
               puts "🎉 成功将 pre_install 拦截补丁追加到 Podfile 底部！"
             end
@@ -102,4 +98,69 @@ jobs:
                     config.build_settings['CODE_SIGNING_ALLOWED'] = 'NO'
                     config.build_settings['CODE_SIGNING_REQUIRED'] = 'NO'
                     config.build_settings['CODE_SIGN_IDENTITY'] = ''
-                    config.build_settings
+                    config.build_settings['PROVISIONING_PROFILE_SPECIFIER'] = ''
+                  end
+            RUBY
+            if content.include?(target_str) && !content.include?('IPHONEOS_DEPLOYMENT_TARGET')
+              content.gsub!(target_str, patch)
+            end
+            File.open(podfile_path, 'w') { |f| f.write(content) }
+            puts 'Podfile 基础配置重构完成！'
+          end
+          EOF
+          ruby patch_target.rb
+          
+          mkdir -p ios/Flutter
+          echo "IPHONEOS_DEPLOYMENT_TARGET=16.0" >> ios/Flutter/Generated.xcconfig
+          echo "CODE_SIGNING_ALLOWED=NO" >> ios/Flutter/Generated.xcconfig
+          echo "CODE_SIGNING_REQUIRED=NO" >> ios/Flutter/Generated.xcconfig
+          echo "CODE_SIGN_IDENTITY=" >> ios/Flutter/Generated.xcconfig
+          
+          echo "IPHONEOS_DEPLOYMENT_TARGET=16.0" >> ios/Flutter/FlutterRelease.xcconfig
+          echo "CODE_SIGNING_ALLOWED=NO" >> ios/Flutter/FlutterRelease.xcconfig
+          echo "CODE_SIGNING_REQUIRED=NO" >> ios/Flutter/FlutterRelease.xcconfig
+          echo "CODE_SIGN_IDENTITY=" >> ios/Flutter/FlutterRelease.xcconfig
+
+      - name: 强行剥离 macOS 隐藏属性
+        run: |
+          echo "=== 正在使用最高权限递归清理 FinderInfo / provenance 属性 ==="
+          sudo xattr -cr . || true
+
+      - name: Build Standard iOS Payload
+        run: |
+          echo "=== 开始执行 Xcode iOS 16.0 强化编译 ==="
+          
+          set +e
+          flutter build ios --release --no-codesign --verbose > xcode_build.log 2>&1
+          BUILD_STATUS=$?
+          set -e
+          
+          if [ $BUILD_STATUS -ne 0 ] || [ ! -d "build/ios/iphoneos/Runner.app" ]; then
+            echo "❌ 编译其实失败了！被空文件夹骗了。以下为真实底层报错："
+            echo "----------------------------------------"
+            tail -n 150 xcode_build.log
+            echo "----------------------------------------"
+            exit 1
+          else
+            echo "🎉 真正的全线编译成功！内容完整！"
+          fi
+        
+      - name: Zip Runner App
+        run: |
+          if [ -d "build/ios/iphoneos/Runner.app" ]; then
+            rm -rf final_zip
+            mkdir -p final_zip/Payload
+            cp -r build/ios/iphoneos/Runner.app final_zip/Payload/
+            cd final_zip
+            zip -r -y -q ready-to-sign.ipa Payload
+            echo "🎉 IPA 免签打包成功！"
+          else
+            echo "❌ 错误：构建产物未生成"
+            exit 1
+          fi
+          
+      - name: Upload Configured Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-release-app
+          path: final_zip/ready-to-sign.ipa
