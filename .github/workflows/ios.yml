@@ -29,48 +29,44 @@ jobs:
           flutter clean
           flutter pub get
 
-      - name: 注入 Podfile 运行期最顶端拦截补丁 (破除 MLKit 冲突的绝杀方案)
+      - name: 注入 Podfile 运行时内存劫持补丁 (终极硬核对齐方案)
         run: |
-          cat << 'EOF' > prepend_top_patch.rb
+          cat << 'EOF' > prepend_monkey_patch.rb
           podfile_path = 'ios/Podfile'
           if File.exist?(podfile_path)
             original_content = File.read(podfile_path)
             
-            # 编写要在 Podfile 最顶端第一行执行的绝杀拦截逻辑
-            patch_code = <<~'RUBY_PATCH'
-              # === MLKit Version Conflict Top Patch Begin ===
-              begin
-                ios_dir = File.expand_path(__dir__)
-                Dir.glob(File.join(ios_dir, ".symlinks/plugins/**/*.podspec")).each do |path|
-                  if File.exist?(path) && !File.directory?(path)
-                    content = File.read(path)
-                    if content.include?("GoogleMLKit/BarcodeScanning")
-                      puts "⚡️ [MLKit Top Patch] 绝对零点成功捕获冲突源: #{path}"
-                      # 强制将各类写法的 BarcodeScanning 依赖对齐到 ~> 7.0.0
-                      new_content = content.gsub(/['"]GoogleMLKit\/BarcodeScanning['"]\s*,\s*['"][^'"]+['"]/, "'GoogleMLKit/BarcodeScanning', '~> 7.0.0'")
-                      if new_content != content
-                        File.write(path, new_content)
-                        puts "🎉 [MLKit Top Patch] 成功在 CocoaPods 解析器苏醒前，将依赖强改对齐至 '~> 7.0.0'！"
+            # 编写侵入 CocoaPods 依赖初始化的元编程补丁
+            monkey_patch_code = <<~'RUBY_PATCH'
+              # === MLKit Dependency Core Monkey Patch Begin ===
+              if defined?(Pod::Dependency)
+                module Pod
+                  class Dependency
+                    alias_method :original_initialize_mlkit, :initialize
+                    def initialize(*args, &block)
+                      # 捕获所有对 BarcodeScanning 的依赖声明，无论来自何处，直接在内存中强改约束
+                      if args[0].to_s.include?('GoogleMLKit/BarcodeScanning')
+                        args[1] = '~> 7.0.0'
+                        args = args[0..1] # 剥离可能存在的旧冲突约束
                       end
+                      original_initialize_mlkit(*args, &block)
                     end
                   end
                 end
-              rescue => e
-                puts "⚡️ [MLKit Top Patch] 运行时拦截异常: #{e.message}"
               end
-              # === MLKit Version Conflict Top Patch End ===
+              # === MLKit Dependency Core Monkey Patch End ===
             RUBY_PATCH
             
-            # 必须前置合并 (patch_code + original_content)，牢牢霸占 Podfile 的第一行入口
-            unless original_content.include?("MLKit Version Conflict Top Patch")
-              File.write(podfile_path, patch_code + "\n" + original_content)
-              puts "🎉 顶级拦截补丁已成功强攻至 Podfile 最顶端！"
+            # 确保将补丁注入到 Podfile 的绝对第一行
+            unless original_content.include?("MLKit Dependency Core Monkey Patch")
+              File.write(podfile_path, monkey_patch_code + "\n" + original_content)
+              puts "🎉 内存劫持补丁已成功强攻至 Podfile 顶端！"
             end
           else
-            puts "❌ 未找到 ios/Podfile，基础结构异常"
+            puts "❌ 未找到 ios/Podfile"
           end
           EOF
-          ruby prepend_top_patch.rb
+          ruby prepend_monkey_patch.rb
           
       - name: 强注 iOS 16.0 Target 与免签补丁
         run: |
@@ -98,7 +94,7 @@ jobs:
               content.gsub!(target_str, patch)
             end
             File.open(podfile_path, 'w') { |f| f.write(content) }
-            puts 'Podfile 基础配置重构完成！'
+            puts 'Podfile 基础环境配置完成！'
           end
           EOF
           ruby patch_target.rb
