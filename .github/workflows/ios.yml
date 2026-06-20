@@ -25,8 +25,6 @@ jobs:
           
       - name: Flutter 准备依赖
         run: |
-          # 确保项目结构完整并获取最新插件
-          flutter create . --platforms=ios
           flutter clean
           flutter pub get
 
@@ -35,7 +33,6 @@ jobs:
           echo "=== 正在全量覆写标准版 Podfile ==="
           rm -f ios/Podfile
           cat << 'EOF' > ios/Podfile
-          # --- 自动生成的完美 15.2 模板 ---
           platform :ios, '15.2'
 
           ENV['COCOAPODS_DISABLE_STATS'] = 'true'
@@ -78,7 +75,6 @@ jobs:
             installer.pods_project.targets.each do |target|
               flutter_additional_ios_build_settings(target)
               target.build_configurations.each do |config|
-                # 强行锁死部署目标与免签策略
                 config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.2'
                 config.build_settings['CODE_SIGNING_ALLOWED'] = 'NO'
                 config.build_settings['CODE_SIGNING_REQUIRED'] = 'NO'
@@ -87,11 +83,9 @@ jobs:
               end
             end
           end
-          # --------------------------------
           EOF
-          puts "🎉 标准版 Podfile 已成功写入！"
+          echo "🎉 标准版 Podfile 已成功写入！"
           
-          # 同步修改底层配置，不留死角
           mkdir -p ios/Flutter
           echo "IPHONEOS_DEPLOYMENT_TARGET=15.2" >> ios/Flutter/Generated.xcconfig
           echo "CODE_SIGNING_ALLOWED=NO" >> ios/Flutter/Generated.xcconfig
@@ -111,7 +105,6 @@ jobs:
 
       - name: Build Standard iOS Payload
         run: |
-          # 确保全局 xcconfig 没有漏网之鱼
           find ios -name "*.xcconfig" -exec sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = .*/IPHONEOS_DEPLOYMENT_TARGET = 15.2/g' {} +
           
           set +e
