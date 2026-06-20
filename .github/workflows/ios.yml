@@ -68,7 +68,7 @@ jobs:
             end
           else
             puts "❌ 未找到 ios/Podfile，请检查本地目录结构"
-          fi
+          end
           EOF
           ruby prepend_patch.rb
           
