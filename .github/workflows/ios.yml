@@ -5,14 +5,9 @@ on:
     branches: [ "main" ]
   workflow_dispatch:
 
-env:
-  LANG: "en_US.UTF-8"
-  LC_ALL: "en_US.UTF-8"
-
 jobs:
   build:
     runs-on: macos-14
-    
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -29,69 +24,46 @@ jobs:
           flutter clean
           flutter pub get
 
-      - name: 注入 Podfile 运行时拦截补丁 (核心：暴力降级 MLKit 约束)
+      - name: 🛠️ 暴力降级插件 .podspec 版本约束
         run: |
-          cat << 'EOF' > prepend_monkey_patch.rb
-          podfile_path = 'ios/Podfile'
-          if File.exist?(podfile_path)
-            original_content = File.read(podfile_path)
-            # 这里增加了对 google_mlkit_commons 的强制拦截，将其版本约束拉回 15.0
-            monkey_patch_code = <<~'RUBY_PATCH'
-              # === Plugin Deployment Target Monkey Patch ===
-              if defined?(::Pod::Installer)
-                pre_install do |installer|
-                  installer.pod_targets.each do |target|
-                    if target.name.include?('google_mlkit_commons')
-                      target.platform.deployment_target = Pod::Version.new('15.0')
-                    end
-                  end
-                end
-              end
-            RUBY_PATCH
-            
-            unless original_content.include?("Plugin Deployment Target Monkey Patch")
-              File.write(podfile_path, monkey_patch_code + "\n" + original_content)
-            end
-          end
-          EOF
-          ruby prepend_monkey_patch.rb
-          
-      - name: 强注 iOS 15.0 Target 并拦截硬补 camera_avfoundation 源码
+          echo "=== 开始地毯式搜索并重写所有 .podspec 的部署目标 ==="
+          # 遍历所有插件的 podspec，强制将平台版本改为 15.0
+          find /Users/runner/.pub-cache/ -name "*.podspec" -exec sed -i '' "s/s.platform = :ios, .*/s.platform = :ios, '15.0'/g" {} +
+          echo "🎉 所有插件的 iOS 版本要求已降级至 15.0"
+
+      - name: 注入 Podfile 强行降级补丁
         run: |
-          cat << 'EOF' > patch_target.rb
+          cat << 'EOF' > patch_podfile.rb
           podfile_path = 'ios/Podfile'
           if File.exist?(podfile_path)
             content = File.read(podfile_path)
+            # 1. 强制设定 Podfile 的平台
+            new_content = "platform :ios, '15.0'\n" + content.gsub(/^platform :ios, .*/, '')
             
-            # 统一强制设为 15.0
-            if content.match?(/^\s*#?\s*platform :ios,/)
-              content.gsub!(/^\s*#?\s*platform :ios,.*/, "platform :ios, '15.0'")
-            else
-              content = "platform :ios, '15.0'\n" + content
-            end
-            
-            # 确保全局 Build Settings 都是 15.0
-            target_str = 'flutter_additional_ios_build_settings(target)'
+            # 2. 注入针对所有 target 的 Build Settings 补丁
             patch = <<~RUBY
-              flutter_additional_ios_build_settings(target)
+              post_install do |installer|
+                installer.pods_project.targets.each do |target|
                   target.build_configurations.each do |config|
                     config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
                   end
+                end
+              end
             RUBY
             
-            if content.include?(target_str) && !content.include?('IPHONEOS_DEPLOYMENT_TARGET')
-              content.gsub!(target_str, patch)
+            # 如果已有 post_install，则合并；如果没有则追加
+            if new_content.include?('post_install')
+               new_content.gsub!(/post_install do \|installer\|/, "post_install do |installer|\n  installer.pods_project.targets.each do |target|\n    target.build_configurations.each do |config|\n      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'\n    end\n  end")
+            else
+               new_content += "\n" + patch
             end
             
-            File.open(podfile_path, 'w') { |f| f.write(content) }
+            File.write(podfile_path, new_content)
           end
           EOF
-          ruby patch_target.rb
-          
-          # 强制更新所有 xcconfig，确保不留死角
-          find ios -name "*.xcconfig" -exec sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = .*/IPHONEOS_DEPLOYMENT_TARGET = 15.0/g' {} +
+          ruby patch_podfile.rb
 
-      - name: 🛠️ 物理硬修 .pub-cache 中的插件底层源码
+      - name: 🛠️ 物理硬修 .pub-cache 中的 DefaultCamera 源码补丁
         run: |
           find /Users/runner/.pub-cache/ -name "DefaultCamera.swift" 2>/dev/null | while read -r target_file; do
             if ! grep -q "extension AVCaptureSession" "$target_file"; then
@@ -102,18 +74,24 @@ jobs:
 
       - name: Build Standard iOS Payload
         run: |
+          # 再次确保所有 xcconfig 统一
+          find ios -name "*.xcconfig" -exec sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = .*/IPHONEOS_DEPLOYMENT_TARGET = 15.0/g' {} +
           flutter build ios --release --no-codesign --verbose
 
       - name: ⚡ 自动化组装 IPA 包
         run: |
           mkdir -p final_zip/Payload
           APP_PATH=$(find build/ios -name "Runner.app" -type d | head -n 1)
-          cp -r "$APP_PATH" final_zip/Payload/
-          cd final_zip && zip -r -y -q ready-to-sign.ipa Payload
+          if [ -d "$APP_PATH" ]; then
+            cp -r "$APP_PATH" final_zip/Payload/
+            cd final_zip && zip -r -y -q ready-to-sign.ipa Payload
+          else
+            echo "找不到 Runner.app，构建失败"
+            exit 1
+          fi
 
       - name: Upload Configured Artifact
         uses: actions/upload-artifact@v4
         with:
           name: ios-release-app
           path: final_zip/ready-to-sign.ipa
- 
