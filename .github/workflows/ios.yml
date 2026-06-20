@@ -89,7 +89,7 @@ jobs:
           ruby patch_target.rb
           
           # 强制更新所有 xcconfig，确保不留死角
-          find ios -name "*.xcconfig" -exec sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = .*/IPHONEOS_DEPLOYMENT_TARGET = 15.2/g' {} +
+          find ios -name "*.xcconfig" -exec sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = .*/IPHONEOS_DEPLOYMENT_TARGET = 15.0/g' {} +
 
       - name: 🛠️ 物理硬修 .pub-cache 中的插件底层源码
         run: |
