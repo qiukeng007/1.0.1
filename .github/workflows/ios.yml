@@ -25,39 +25,43 @@ jobs:
           
       - name: Flutter 准备依赖
         run: |
-          flutter create . --platforms=ios
+          # 删除了高风险的 flutter create，保护你原有的 ios 工程目录
           flutter clean
           flutter pub get
 
-      - name: 强注 iOS 15.2 Target
+      - name: 强注 iOS 15.2 Target (无损安全注入版)
         run: |
+          echo "=== 正在安全注入 iOS 15.2 编译配置 ==="
           cat << 'EOF' > patch_podfile.rb
           podfile_path = 'ios/Podfile'
           if File.exist?(podfile_path)
             content = File.read(podfile_path)
-            # 设定 Podfile 平台
-            new_content = "platform :ios, '15.2'\n" + content.gsub(/^\s*#?\s*platform :ios, .*/, '')
             
-            patch = <<~RUBY
-              post_install do |installer|
-                installer.pods_project.targets.each do |target|
-                  target.build_configurations.each do |config|
-                    config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.2'
-                    config.build_settings['CODE_SIGNING_ALLOWED'] = 'NO'
-                    config.build_settings['CODE_SIGNING_REQUIRED'] = 'NO'
-                    config.build_settings['CODE_SIGN_IDENTITY'] = ''
-                  end
-                end
-              end
+            # 1. 安全修改全局平台版本
+            content.sub!(/^#? ?platform :ios.*/, "platform :ios, '15.2'")
+            
+            # 2. 安全注入 Target 编译设置（精准定位，不破坏原有结构）
+            injection = <<~RUBY
+              
+                    # --- CI 自动注入免签与 15.2 兼容 ---
+                    target.build_configurations.each do |config|
+                      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.2'
+                      config.build_settings['CODE_SIGNING_ALLOWED'] = 'NO'
+                      config.build_settings['CODE_SIGNING_REQUIRED'] = 'NO'
+                      config.build_settings['CODE_SIGN_IDENTITY'] = ''
+                    end
+                    # -----------------------------------
             RUBY
             
-            if new_content.include?('post_install do |installer|')
-               new_content.gsub!(/post_install do \|installer\|/, "post_install do |installer|\n  installer.pods_project.targets.each do |target|\n    target.build_configurations.each do |config|\n      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.2'\n      config.build_settings['CODE_SIGNING_ALLOWED'] = 'NO'\n      config.build_settings['CODE_SIGNING_REQUIRED'] = 'NO'\n      config.build_settings['CODE_SIGN_IDENTITY'] = ''\n    end\n  end")
-            else
-               new_content += "\n" + patch
+            # 寻找 Flutter 默认的配置行，并在其正下方精准追加我们的代码
+            if content.include?("flutter_additional_ios_build_settings(target)") && !content.include?("CI 自动注入免签")
+              content.gsub!(/(flutter_additional_ios_build_settings\(target\))/, "\\1" + injection)
             end
             
-            File.write(podfile_path, new_content)
+            File.write(podfile_path, content)
+            puts "🎉 Podfile 安全修补完成！"
+          else
+            puts "❌ 找不到 ios/Podfile"
           end
           EOF
           ruby patch_podfile.rb
@@ -67,7 +71,7 @@ jobs:
           echo "CODE_SIGNING_ALLOWED=NO" >> ios/Flutter/Generated.xcconfig
           echo "CODE_SIGNING_REQUIRED=NO" >> ios/Flutter/Generated.xcconfig
 
-      - name: 🛠️ 物理硬修 .pub-cache 中的 DefaultCamera 源码补丁 (解决旧版断层)
+      - name: 🛠️ 物理硬修 .pub-cache 中的 DefaultCamera 源码补丁
         run: |
           find /Users/runner/.pub-cache/ -name "DefaultCamera.swift" 2>/dev/null | while read -r target_file; do
             if ! grep -q "extension AVCaptureSession" "$target_file"; then
