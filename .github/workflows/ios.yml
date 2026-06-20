@@ -25,47 +25,73 @@ jobs:
           
       - name: Flutter 准备依赖
         run: |
-          # 删除了高风险的 flutter create，保护你原有的 ios 工程目录
+          # 确保项目结构完整并获取最新插件
+          flutter create . --platforms=ios
           flutter clean
           flutter pub get
 
-      - name: 强注 iOS 15.2 Target (无损安全注入版)
+      - name: 🛠️ 暴力重建无暇版 Podfile (强锁 15.2 与免签)
         run: |
-          echo "=== 正在安全注入 iOS 15.2 编译配置 ==="
-          cat << 'EOF' > patch_podfile.rb
-          podfile_path = 'ios/Podfile'
-          if File.exist?(podfile_path)
-            content = File.read(podfile_path)
-            
-            # 1. 安全修改全局平台版本
-            content.sub!(/^#? ?platform :ios.*/, "platform :ios, '15.2'")
-            
-            # 2. 安全注入 Target 编译设置（精准定位，不破坏原有结构）
-            injection = <<~RUBY
-              
-                    # --- CI 自动注入免签与 15.2 兼容 ---
-                    target.build_configurations.each do |config|
-                      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.2'
-                      config.build_settings['CODE_SIGNING_ALLOWED'] = 'NO'
-                      config.build_settings['CODE_SIGNING_REQUIRED'] = 'NO'
-                      config.build_settings['CODE_SIGN_IDENTITY'] = ''
-                    end
-                    # -----------------------------------
-            RUBY
-            
-            # 寻找 Flutter 默认的配置行，并在其正下方精准追加我们的代码
-            if content.include?("flutter_additional_ios_build_settings(target)") && !content.include?("CI 自动注入免签")
-              content.gsub!(/(flutter_additional_ios_build_settings\(target\))/, "\\1" + injection)
+          echo "=== 正在全量覆写标准版 Podfile ==="
+          rm -f ios/Podfile
+          cat << 'EOF' > ios/Podfile
+          # --- 自动生成的完美 15.2 模板 ---
+          platform :ios, '15.2'
+
+          ENV['COCOAPODS_DISABLE_STATS'] = 'true'
+
+          project 'Runner', {
+            'Debug' => :debug,
+            'Profile' => :release,
+            'Release' => :release,
+          }
+
+          def flutter_root
+            generated_xcode_build_settings_path = File.expand_path(File.join('..', 'Flutter', 'Generated.xcconfig'), __FILE__)
+            unless File.exist?(generated_xcode_build_settings_path)
+              raise "#{generated_xcode_build_settings_path} must exist. If you're running pod install manually, make sure flutter pub get is executed first"
             end
-            
-            File.write(podfile_path, content)
-            puts "🎉 Podfile 安全修补完成！"
-          else
-            puts "❌ 找不到 ios/Podfile"
+
+            File.foreach(generated_xcode_build_settings_path) do |line|
+              matches = line.match(/FLUTTER_ROOT\=(.*)/)
+              return matches[1].strip if matches
+            end
+            raise "FLUTTER_ROOT not found in #{generated_xcode_build_settings_path}. Try deleting Generated.xcconfig, then run flutter pub get"
           end
+
+          require File.expand_path(File.join('packages', 'flutter_tools', 'bin', 'podhelper'), flutter_root)
+
+          flutter_ios_podfile_setup
+
+          target 'Runner' do
+            use_frameworks!
+            use_modular_headers!
+
+            flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
+            
+            target 'RunnerTests' do
+              inherit! :search_paths
+            end
+          end
+
+          post_install do |installer|
+            installer.pods_project.targets.each do |target|
+              flutter_additional_ios_build_settings(target)
+              target.build_configurations.each do |config|
+                # 强行锁死部署目标与免签策略
+                config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.2'
+                config.build_settings['CODE_SIGNING_ALLOWED'] = 'NO'
+                config.build_settings['CODE_SIGNING_REQUIRED'] = 'NO'
+                config.build_settings['CODE_SIGN_IDENTITY'] = ''
+                config.build_settings['PROVISIONING_PROFILE_SPECIFIER'] = ''
+              end
+            end
+          end
+          # --------------------------------
           EOF
-          ruby patch_podfile.rb
+          puts "🎉 标准版 Podfile 已成功写入！"
           
+          # 同步修改底层配置，不留死角
           mkdir -p ios/Flutter
           echo "IPHONEOS_DEPLOYMENT_TARGET=15.2" >> ios/Flutter/Generated.xcconfig
           echo "CODE_SIGNING_ALLOWED=NO" >> ios/Flutter/Generated.xcconfig
@@ -85,6 +111,7 @@ jobs:
 
       - name: Build Standard iOS Payload
         run: |
+          # 确保全局 xcconfig 没有漏网之鱼
           find ios -name "*.xcconfig" -exec sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = .*/IPHONEOS_DEPLOYMENT_TARGET = 15.2/g' {} +
           
           set +e
