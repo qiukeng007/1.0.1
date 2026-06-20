@@ -29,112 +29,86 @@ jobs:
           flutter clean
           flutter pub get
 
-      - name: 注入 Podfile 运行时内存劫持补丁
+      - name: ☢️ 终极物理篡改所有插件的 iOS 版本底线
         run: |
-          cat << 'EOF' > prepend_monkey_patch.rb
-          podfile_path = 'ios/Podfile'
-          if File.exist?(podfile_path)
-            original_content = File.read(podfile_path)
-            monkey_patch_code = <<~'RUBY_PATCH'
-              # === MLKit Dependency Core Monkey Patch Begin ===
-              if defined?(::Pod::Dependency)
-                ::Pod::Dependency.class_eval do
-                  unless method_defined?(:original_initialize_mlkit)
-                    alias_method :original_initialize_mlkit, :initialize
-                    def initialize(*args, &block)
-                      if args[0].to_s.include?('GoogleMLKit/BarcodeScanning')
-                        args[1] = '~> 7.0.0'
-                        args = args[0..1]
-                      end
-                      original_initialize_mlkit(*args, &block)
-                    end
-                  end
-                end
-              end
-              # === MLKit Dependency Core Monkey Patch End ===
-            RUBY_PATCH
+          cat << 'EOF' > patch_podspecs.rb
+          require 'fileutils'
+          
+          # 定位 Flutter 插件的全局缓存目录
+          cache_dir = File.expand_path('~/.pub-cache/hosted/pub.dev')
+          podspecs = Dir.glob("#{cache_dir}/**/*.podspec")
+          
+          puts "🔍 正在扫描 #{podspecs.length} 个 podspec 配置文件..."
+          
+          patched_count = 0
+          podspecs.each do |file|
+            content = File.read(file)
+            modified = false
             
-            unless original_content.include?("MLKit Dependency Core Monkey Patch")
-              File.write(podfile_path, monkey_patch_code + "\n" + original_content)
+            # 使用精准的 Ruby 块级正则替换，无视原有版本号，强行写入 15.0
+            if content.match?(/s\.platform\s*=\s*:ios/)
+              content.gsub!(/(s\.platform\s*=\s*:ios\s*,\s*['"])(.*?)(['"])/) { "#{$1}15.0#{$3}" }
+              modified = true
+            end
+            
+            if content.match?(/s\.ios\.deployment_target/)
+              content.gsub!(/(s\.ios\.deployment_target\s*=\s*['"])(.*?)(['"])/) { "#{$1}15.0#{$3}" }
+              modified = true
+            end
+            
+            if modified
+              File.write(file, content)
+              puts "✅ 已强行降级: #{file.split('/').last}"
+              patched_count += 1
             end
           end
+          puts "🎉 核弹级降级完毕，共重写了 #{patched_count} 个插件依赖！"
           EOF
-          ruby prepend_monkey_patch.rb
-          
-      - name: 强注 iOS 15.2 Target 并拦截硬补 camera_avfoundation 源码
+          ruby patch_podspecs.rb
+
+      - name: 注入 Podfile 强行降级补丁
         run: |
-          cat << 'EOF' > patch_target.rb
+          cat << 'EOF' > patch_podfile.rb
           podfile_path = 'ios/Podfile'
           if File.exist?(podfile_path)
             content = File.read(podfile_path)
+            new_content = "platform :ios, '15.0'\n" + content.gsub(/^\s*#?\s*platform :ios, .*/, '')
             
-            # 统一降级为 15.2
-            if content.match?(/^\s*#?\s*platform :ios,/)
-              content.gsub!(/^\s*#?\s*platform :ios,.*/, "platform :ios, '15.2'")
-            else
-              content = "platform :ios, '15.2'\n" + content
-            end
-            
-            target_str = 'flutter_additional_ios_build_settings(target)'
             patch = <<~RUBY
-              flutter_additional_ios_build_settings(target)
+              post_install do |installer|
+                installer.pods_project.targets.each do |target|
                   target.build_configurations.each do |config|
-                    config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.2'
+                    config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
                     config.build_settings['CODE_SIGNING_ALLOWED'] = 'NO'
                     config.build_settings['CODE_SIGNING_REQUIRED'] = 'NO'
                     config.build_settings['CODE_SIGN_IDENTITY'] = ''
-                    config.build_settings['PROVISIONING_PROFILE_SPECIFIER'] = ''
                   end
+                end
+              end
             RUBY
             
-            if content.include?(target_str) && !content.include?('IPHONEOS_DEPLOYMENT_TARGET')
-              content.gsub!(target_str, patch)
+            if new_content.include?('post_install do |installer|')
+               new_content.gsub!(/post_install do \|installer\|/, "post_install do |installer|\n  installer.pods_project.targets.each do |target|\n    target.build_configurations.each do |config|\n      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'\n      config.build_settings['CODE_SIGNING_ALLOWED'] = 'NO'\n      config.build_settings['CODE_SIGNING_REQUIRED'] = 'NO'\n      config.build_settings['CODE_SIGN_IDENTITY'] = ''\n    end\n  end")
+            else
+               new_content += "\n" + patch
             end
             
-            unless content.include?('camera_avfoundation_source_fix')
-              source_fix_patch = <<~'RUBY_FIX'
-                # === camera_avfoundation_source_fix begin ===
-                begin
-                  target_file = Dir.glob("Pods/camera_avfoundation/**/DefaultCamera.swift").first
-                  if target_file && File.exist?(target_file)
-                    file_content = File.read(target_file)
-                    unless file_content.include?("extension AVCaptureSession")
-                      fix_code = "\nimport AVFoundation\nextension AVCaptureSession {\n    @objc public static let wasInterruptedNotification = NSNotification.Name.AVCaptureSessionWasInterrupted\n    @objc public static let runtimeErrorNotification = NSNotification.Name.AVCaptureSessionRuntimeError\n}\n"
-                      File.write(target_file, file_content + "\n" + fix_code)
-                    end
-                  end
-                rescue => e
-                  puts "Fixing source failed: #{e.message}"
-                end
-                # === camera_avfoundation_source_fix end ===
-              RUBY_FIX
-              content += "\n" + source_fix_patch
-            end
-            
-            File.open(podfile_path, 'w') { |f| f.write(content) }
+            File.write(podfile_path, new_content)
           end
           EOF
-          ruby patch_target.rb
+          ruby patch_podfile.rb
           
           mkdir -p ios/Flutter
-          echo "IPHONEOS_DEPLOYMENT_TARGET=15.2" >> ios/Flutter/Generated.xcconfig
+          echo "IPHONEOS_DEPLOYMENT_TARGET=15.0" >> ios/Flutter/Generated.xcconfig
           echo "CODE_SIGNING_ALLOWED=NO" >> ios/Flutter/Generated.xcconfig
           echo "CODE_SIGNING_REQUIRED=NO" >> ios/Flutter/Generated.xcconfig
-          echo "CODE_SIGN_IDENTITY=" >> ios/Flutter/Generated.xcconfig
-          
-          echo "IPHONEOS_DEPLOYMENT_TARGET=15.2" >> ios/Flutter/FlutterRelease.xcconfig
-          echo "CODE_SIGNING_ALLOWED=NO" >> ios/Flutter/FlutterRelease.xcconfig
-          echo "CODE_SIGNING_REQUIRED=NO" >> ios/Flutter/FlutterRelease.xcconfig
-          echo "CODE_SIGN_IDENTITY=" >> ios/Flutter/FlutterRelease.xcconfig
 
-      - name: 🛠️ 物理硬修 .pub-cache 中的插件底层源码
+      - name: 🛠️ 物理硬修 .pub-cache 中的 DefaultCamera 源码补丁
         run: |
           find /Users/runner/.pub-cache/ -name "DefaultCamera.swift" 2>/dev/null | while read -r target_file; do
-            if [ -f "$target_file" ]; then
-              if ! grep -q "extension AVCaptureSession" "$target_file"; then
-                sudo chmod 664 "$target_file" || true
-                echo -e "\nimport AVFoundation\nextension AVCaptureSession {\n    @objc public static let wasInterruptedNotification = NSNotification.Name.AVCaptureSessionWasInterrupted\n    @objc public static let runtimeErrorNotification = NSNotification.Name.AVCaptureSessionRuntimeError\n}" >> "$target_file"
-              fi
+            if ! grep -q "extension AVCaptureSession" "$target_file"; then
+              sudo chmod 664 "$target_file" || true
+              echo -e "\nimport AVFoundation\nextension AVCaptureSession {\n    @objc public static let wasInterruptedNotification = NSNotification.Name.AVCaptureSessionWasInterrupted\n    @objc public static let runtimeErrorNotification = NSNotification.Name.AVCaptureSessionRuntimeError\n}" >> "$target_file"
             fi
           done
 
@@ -143,13 +117,17 @@ jobs:
 
       - name: Build Standard iOS Payload
         run: |
+          # 确保全局 xcconfig 没有漏网之鱼
+          find ios -name "*.xcconfig" -exec sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = .*/IPHONEOS_DEPLOYMENT_TARGET = 15.0/g' {} +
+          
           set +e
           flutter build ios --release --no-codesign --verbose > xcode_build.log 2>&1
           if [ $? -ne 0 ]; then
+            echo "❌ 编译遭遇硬伤！以下为最后 150 行原始上下文："
             tail -n 150 xcode_build.log
             exit 1
           fi
-        
+
       - name: ⚡ 自动化组装 IPA 包
         run: |
           rm -rf final_zip
@@ -160,10 +138,10 @@ jobs:
             cd final_zip
             zip -r -y -q ready-to-sign.ipa Payload
           else
-            find build/ios -maxdepth 4
+            echo "❌ 找不到 Runner.app"
             exit 1
           fi
-          
+
       - name: Upload Configured Artifact
         uses: actions/upload-artifact@v4
         with:
