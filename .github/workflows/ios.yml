@@ -29,55 +29,48 @@ jobs:
           flutter clean
           flutter pub get
 
-      - name: 注入 Podfile 运行期拦截补丁 (破除 MLKit 冲突的终极方案)
+      - name: 注入 Podfile 运行期最顶端拦截补丁 (破除 MLKit 冲突的绝杀方案)
         run: |
-          cat << 'EOF' > prepend_patch.rb
+          cat << 'EOF' > prepend_top_patch.rb
           podfile_path = 'ios/Podfile'
           if File.exist?(podfile_path)
             original_content = File.read(podfile_path)
             
+            # 编写要在 Podfile 最顶端第一行执行的绝杀拦截逻辑
             patch_code = <<~'RUBY_PATCH'
-              
-              # === MLKit Version Conflict Fix Begin ===
-              pre_install do |installer|
-                puts "⚡️ [MLKit Patch] 进入 pre_install 黄金窗口，开始强行对齐依赖..."
-                
-                search_patterns = [
-                  File.expand_path('../.symlinks/plugins/**/*.podspec', __FILE__),
-                  '/Users/runner/.pub-cache/**/*.podspec'
-                ]
-                
-                search_patterns.each do |pattern|
-                  Dir.glob(pattern).each do |path|
-                    next unless File.exist?(path) && !File.directory?(path)
-                    
+              # === MLKit Version Conflict Top Patch Begin ===
+              begin
+                ios_dir = File.expand_path(__dir__)
+                Dir.glob(File.join(ios_dir, ".symlinks/plugins/**/*.podspec")).each do |path|
+                  if File.exist?(path) && !File.directory?(path)
                     content = File.read(path)
                     if content.include?("GoogleMLKit/BarcodeScanning")
-                      puts "⚡️ [MLKit Patch] 成功拦截冲突源文件: #{path}"
-                      
+                      puts "⚡️ [MLKit Top Patch] 绝对零点成功捕获冲突源: #{path}"
+                      # 强制将各类写法的 BarcodeScanning 依赖对齐到 ~> 7.0.0
                       new_content = content.gsub(/['"]GoogleMLKit\/BarcodeScanning['"]\s*,\s*['"][^'"]+['"]/, "'GoogleMLKit/BarcodeScanning', '~> 7.0.0'")
-                      
                       if new_content != content
                         File.write(path, new_content)
-                        puts "🎉 [MLKit Patch] 依赖已成功重写为 '~> 7.0.0'！"
+                        puts "🎉 [MLKit Top Patch] 成功在 CocoaPods 解析器苏醒前，将依赖强改对齐至 '~> 7.0.0'！"
                       end
                     end
                   end
                 end
-                puts "⚡️ [MLKit Patch] 预处理拦截阶段顺利结束。"
+              rescue => e
+                puts "⚡️ [MLKit Top Patch] 运行时拦截异常: #{e.message}"
               end
-              # === MLKit Version Conflict Fix End ===
+              # === MLKit Version Conflict Top Patch End ===
             RUBY_PATCH
             
-            unless original_content.include?("MLKit Version Conflict Fix")
-              File.write(podfile_path, original_content + "\n" + patch_code)
-              puts "🎉 成功将 pre_install 拦截补丁追加到 Podfile 底部！"
+            # 必须前置合并 (patch_code + original_content)，牢牢霸占 Podfile 的第一行入口
+            unless original_content.include?("MLKit Version Conflict Top Patch")
+              File.write(podfile_path, patch_code + "\n" + original_content)
+              puts "🎉 顶级拦截补丁已成功强攻至 Podfile 最顶端！"
             end
           else
-            puts "❌ 未找到 ios/Podfile，请检查基础目录结构"
+            puts "❌ 未找到 ios/Podfile，基础结构异常"
           end
           EOF
-          ruby prepend_patch.rb
+          ruby prepend_top_patch.rb
           
       - name: 强注 iOS 16.0 Target 与免签补丁
         run: |
@@ -136,7 +129,7 @@ jobs:
           set -e
           
           if [ $BUILD_STATUS -ne 0 ] || [ ! -d "build/ios/iphoneos/Runner.app" ]; then
-            echo "❌ 编译其实失败了！被空文件夹骗了。以下为真实底层报错："
+            echo "❌ 编译遭遇硬伤！以下为最后 150 行原始上下文："
             echo "----------------------------------------"
             tail -n 150 xcode_build.log
             echo "----------------------------------------"
