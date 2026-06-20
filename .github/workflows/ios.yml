@@ -29,14 +29,12 @@ jobs:
           flutter clean
           flutter pub get
 
-      - name: 注入 Podfile 运行时内存劫持补丁 (零污染终极方案)
+      - name: 注入 Podfile 运行时内存劫持补丁
         run: |
           cat << 'EOF' > prepend_monkey_patch.rb
           podfile_path = 'ios/Podfile'
           if File.exist?(podfile_path)
             original_content = File.read(podfile_path)
-            
-            # 使用 class_eval 替代传统的 module/class 嵌套，防止破坏 CocoaPods 内部常量的词法域
             monkey_patch_code = <<~'RUBY_PATCH'
               # === MLKit Dependency Core Monkey Patch Begin ===
               if defined?(::Pod::Dependency)
@@ -44,10 +42,9 @@ jobs:
                   unless method_defined?(:original_initialize_mlkit)
                     alias_method :original_initialize_mlkit, :initialize
                     def initialize(*args, &block)
-                      # 强制拦截对 BarcodeScanning 的解析，并把它的版本依赖无伤拉高对齐到 ~> 7.0.0
                       if args[0].to_s.include?('GoogleMLKit/BarcodeScanning')
                         args[1] = '~> 7.0.0'
-                        args = args[0..1] # 剔除可能带有冲突的旧边界条件
+                        args = args[0..1]
                       end
                       original_initialize_mlkit(*args, &block)
                     end
@@ -57,7 +54,6 @@ jobs:
               # === MLKit Dependency Core Monkey Patch End ===
             RUBY_PATCH
             
-            # 必须前置合并，死死把守住 Podfile 第一行解析入口
             unless original_content.include?("MLKit Dependency Core Monkey Patch")
               File.write(podfile_path, monkey_patch_code + "\n" + original_content)
               puts "🎉 零污染内存补丁已安全无缝打入 Podfile 最顶端！"
@@ -109,6 +105,20 @@ jobs:
           echo "CODE_SIGNING_ALLOWED=NO" >> ios/Flutter/FlutterRelease.xcconfig
           echo "CODE_SIGNING_REQUIRED=NO" >> ios/Flutter/FlutterRelease.xcconfig
           echo "CODE_SIGN_IDENTITY=" >> ios/Flutter/FlutterRelease.xcconfig
+
+      - name: 🛠️ 注入 AVCaptureSession 全局 Swift 兼容补丁
+        run: |
+          echo "=== 正在注入全局 Swift 编译器补丁 ==="
+          cat << 'EOF' > ios/Runner/AVCaptureSession+Fix.swift
+          import AVFoundation
+          import Foundation
+
+          extension AVCaptureSession {
+              @objc public static let wasInterruptedNotification = NSNotification.Name.AVCaptureSessionWasInterrupted
+              @objc public static let runtimeErrorNotification = NSNotification.Name.AVCaptureSessionRuntimeError
+          }
+          EOF
+          echo "🎉 兼容补丁已成功生成！"
 
       - name: 强行剥离 macOS 隐藏属性
         run: |
