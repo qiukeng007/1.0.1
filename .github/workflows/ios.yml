@@ -5,42 +5,146 @@ on:
     branches: [ "main" ]
   workflow_dispatch:
 
+env:
+  LANG: "en_US.UTF-8"
+  LC_ALL: "en_US.UTF-8"
+
 jobs:
   build:
     runs-on: macos-14
     
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
       
       - name: 设置 Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
-          cache: false
+          cache: true
           
-      - name: 清理并获取依赖
+      - name: Flutter 准备依赖
         run: |
+          flutter create . --platforms=ios
           flutter clean
           flutter pub get
-        
-      - name: Build Standard iOS Payload
-        # 先往 Flutter 的配置文件里硬写入“不签名”参数，再执行干净的打包命令
+
+      - name: 强力解开隐形目录并对齐 MLKit 版本 (硬核破敌关键)
         run: |
+          cat << 'EOF' > force_patch.rb
+          require 'find'
+          puts "=== 🚀 开始硬核无死角扫描所有 podspec 文件 ==="
+          
+          # 显式定义扫描起点，强行突破隐藏文件夹隔离
+          scan_paths = ['.', '/Users/runner/.pub-cache']
+          patched_count = 0
+          
+          scan_paths.each do |start_path|
+            next unless Dir.exist?(start_path)
+            
+            Find.find(start_path) do |path|
+              # 只要是 podspec 文件就拦截
+              if path =~ /\.podspec$/ && !File.directory?(path)
+                begin
+                  content = File.read(path)
+                  if content.include?("BarcodeScanning")
+                    puts "📍 捕获冲突目标: #{path}"
+                    
+                    # 极其霸道的正则替换：不管中间是单引号、双引号还是空格，只要写了 BarcodeScanning 且带版本号，通通抹平
+                    new_content = content.gsub(/['"]GoogleMLKit\/BarcodeScanning['"]\s*,\s*['"][^'"]+['"]/, "'GoogleMLKit/BarcodeScanning', '~> 7.0.0'")
+                    
+                    if new_content != content
+                      File.write(path, new_content)
+                      puts "   🎉 [成功] 强行对齐依赖至 '~> 7.0.0'"
+                      patched_count += 1
+                    else
+                      puts "   ⚠️ [跳过] 内容已是对齐状态"
+                    end
+                  end
+                rescue => e
+                  puts "   ❌ 读取异常 [#{path}]: #{e.message}"
+                end
+              end
+            end
+          end
+          
+          puts "=== 🏁 扫描结束：共计强行重写了 #{patched_count} 个关键配置文件 ==="
+          EOF
+          ruby force_patch.rb
+          
+      - name: 强注 iOS 16.0 Target 与免签补丁
+        run: |
+          ruby -e "
+          podfile_path = 'ios/Podfile'
+          if File.exist?(podfile_path)
+            content = File.read(podfile_path)
+            if content.match?(/^\s*#?\s*platform :ios,/)
+              content.gsub!(/^\s*#?\s*platform :ios,.*/, \"platform :ios, '16.0'\")
+            else
+              content = \"platform :ios, '16.0'\n\" + content
+            end
+            target_str = 'flutter_additional_ios_build_settings(target)'
+            patch = <<~RUBY
+              flutter_additional_ios_build_settings(target)
+                  target.build_configurations.each do |config|
+                    config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '16.0'
+                    config.build_settings['CODE_SIGNING_ALLOWED'] = 'NO'
+                    config.build_settings['CODE_SIGNING_REQUIRED'] = 'NO'
+                    config.build_settings['CODE_SIGN_IDENTITY'] = ''
+                    config.build_settings['PROVISIONING_PROFILE_SPECIFIER'] = ''
+                  end
+            RUBY
+            if content.include?(target_str) && !content.include?('IPHONEOS_DEPLOYMENT_TARGET')
+              content.gsub!(target_str, patch)
+            end
+            File.open(podfile_path, 'w') { |f| f.write(content) }
+            puts 'Podfile 重构完成！'
+          end
+          "
           mkdir -p ios/Flutter
+          echo "IPHONEOS_DEPLOYMENT_TARGET=16.0" >> ios/Flutter/Generated.xcconfig
           echo "CODE_SIGNING_ALLOWED=NO" >> ios/Flutter/Generated.xcconfig
           echo "CODE_SIGNING_REQUIRED=NO" >> ios/Flutter/Generated.xcconfig
           echo "CODE_SIGN_IDENTITY=" >> ios/Flutter/Generated.xcconfig
-          echo "PROVISIONING_PROFILE=" >> ios/Flutter/Generated.xcconfig
           
-          flutter build ios --release --no-codesign
+          echo "IPHONEOS_DEPLOYMENT_TARGET=16.0" >> ios/Flutter/FlutterRelease.xcconfig
+          echo "CODE_SIGNING_ALLOWED=NO" >> ios/Flutter/FlutterRelease.xcconfig
+          echo "CODE_SIGNING_REQUIRED=NO" >> ios/Flutter/FlutterRelease.xcconfig
+          echo "CODE_SIGN_IDENTITY=" >> ios/Flutter/FlutterRelease.xcconfig
+
+      - name: 强行剥离 macOS 隐藏属性
+        run: |
+          echo "=== 正在使用最高权限递归清理 FinderInfo / provenance 属性 ==="
+          sudo xattr -cr . || true
+
+      - name: Build Standard iOS Payload
+        run: |
+          echo "=== 开始执行 Xcode iOS 16.0 强化编译 ==="
+          flutter build ios --release --no-codesign --verbose > xcode_build.log 2>&1 || true
+          
+          if [ ! -d "build/ios/iphoneos/Runner.app" ]; then
+            echo "❌ 编译遭遇硬伤！以下为最后 120 行原始上下文："
+            echo "----------------------------------------"
+            tail -n 120 xcode_build.log
+            echo "----------------------------------------"
+            exit 1
+          else
+            echo "🎉 编译成功！"
+          fi
         
       - name: Zip Runner App
         run: |
-          mkdir -p final_zip/Payload
-          cp -r build/ios/iphoneos/Runner.app final_zip/Payload/
-          cd final_zip
-          zip -r -1 ready-to-sign.ipa Payload
-        
+          if [ -d "build/ios/iphoneos/Runner.app" ]; then
+            mkdir -p final_zip/Payload
+            cp -r build/ios/iphoneos/Runner.app final_zip/Payload/
+            cd final_zip
+            zip -r -y -q ready-to-sign.ipa Payload
+            echo "🎉 IPA 免签打包成功！"
+          else
+            echo "❌ 错误：构建产物未生成"
+            exit 1
+          fi
+          
       - name: Upload Configured Artifact
         uses: actions/upload-artifact@v4
         with:
