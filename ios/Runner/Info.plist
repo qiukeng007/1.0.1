@@ -59,6 +59,12 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<key>NSCameraUsageDescription</key>
+	<string>需要使用相机扫描条码和拍摄商品照片</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>需要使用麦克风进行语音输入</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>需要访问相册保存商品图片</string>
 	<key>UISupportedInterfaceOrientations~ipad</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
