@@ -29,25 +29,25 @@ jobs:
           flutter clean
           flutter pub get
 
-      - name: 注入 Podfile 运行时内存劫持补丁 (终极硬核对齐方案)
+      - name: 注入 Podfile 运行时内存劫持补丁 (零污染终极方案)
         run: |
           cat << 'EOF' > prepend_monkey_patch.rb
           podfile_path = 'ios/Podfile'
           if File.exist?(podfile_path)
             original_content = File.read(podfile_path)
             
-            # 编写侵入 CocoaPods 依赖初始化的元编程补丁
+            # 使用 class_eval 替代传统的 module/class 嵌套，防止破坏 CocoaPods 内部常量的词法域
             monkey_patch_code = <<~'RUBY_PATCH'
               # === MLKit Dependency Core Monkey Patch Begin ===
-              if defined?(Pod::Dependency)
-                module Pod
-                  class Dependency
+              if defined?(::Pod::Dependency)
+                ::Pod::Dependency.class_eval do
+                  unless method_defined?(:original_initialize_mlkit)
                     alias_method :original_initialize_mlkit, :initialize
                     def initialize(*args, &block)
-                      # 捕获所有对 BarcodeScanning 的依赖声明，无论来自何处，直接在内存中强改约束
+                      # 强制拦截对 BarcodeScanning 的解析，并把它的版本依赖无伤拉高对齐到 ~> 7.0.0
                       if args[0].to_s.include?('GoogleMLKit/BarcodeScanning')
                         args[1] = '~> 7.0.0'
-                        args = args[0..1] # 剥离可能存在的旧冲突约束
+                        args = args[0..1] # 剔除可能带有冲突的旧边界条件
                       end
                       original_initialize_mlkit(*args, &block)
                     end
@@ -57,10 +57,10 @@ jobs:
               # === MLKit Dependency Core Monkey Patch End ===
             RUBY_PATCH
             
-            # 确保将补丁注入到 Podfile 的绝对第一行
+            # 必须前置合并，死死把守住 Podfile 第一行解析入口
             unless original_content.include?("MLKit Dependency Core Monkey Patch")
               File.write(podfile_path, monkey_patch_code + "\n" + original_content)
-              puts "🎉 内存劫持补丁已成功强攻至 Podfile 顶端！"
+              puts "🎉 零污染内存补丁已安全无缝打入 Podfile 最顶端！"
             end
           else
             puts "❌ 未找到 ios/Podfile"
@@ -94,7 +94,7 @@ jobs:
               content.gsub!(target_str, patch)
             end
             File.open(podfile_path, 'w') { |f| f.write(content) }
-            puts 'Podfile 基础环境配置完成！'
+            puts 'Podfile 编译配置加固完成！'
           end
           EOF
           ruby patch_target.rb
