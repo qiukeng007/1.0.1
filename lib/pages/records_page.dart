@@ -3,6 +3,8 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../utils/constants.dart';
 import '../services/query_service.dart';
+import '../services/operation_log_service.dart';
+import '../widgets/scanner_view.dart';
 
 class RecordsPage extends StatefulWidget {
   final String? initialBarcode;
@@ -61,6 +63,7 @@ class _RecordsPageState extends State<RecordsPage> {
     RecordsPage.cachedDays = _selectedDays;
     RecordsPage.cachedCustomStart = _customStart;
     RecordsPage.cachedCustomEnd = _customEnd;
+    _savePrefs();
   }
 
   static const _storeIds = {'总店': '5634817', 'C1': '5634818', 'C2': '5634821', 'C3': '5968885'};
@@ -69,15 +72,39 @@ class _RecordsPageState extends State<RecordsPage> {
     'C2': Color(0xFFD97706), 'C3': Color(0xFF7C3AED),
   };
 
+  static const _prefsStoresKey = 'stock_history_stores';
+  static const _prefsDaysKey = 'stock_history_days';
+
   @override
   void initState() {
     super.initState();
-    // Restore cached state from previous visit
-    _selectedStores.clear();
-    _selectedStores.addAll(RecordsPage.cachedStores);
-    _selectedDays = RecordsPage.cachedDays;
-    _customStart = RecordsPage.cachedCustomStart;
-    _customEnd = RecordsPage.cachedCustomEnd;
+    if (widget.initialBarcode != null) {
+      _barcodeCtrl.text = widget.initialBarcode!;
+    }
+    _initFromPrefs();
+  }
+
+  Future<void> _initFromPrefs() async {
+    final prefs = await SharedPreferences.getInstance();
+    // Restore store selection
+    final savedStores = prefs.getStringList(_prefsStoresKey);
+    if (savedStores != null && savedStores.isNotEmpty) {
+      _selectedStores.clear();
+      _selectedStores.addAll(savedStores.where((s) => _storeIds.containsKey(s)));
+      RecordsPage.cachedStores = Set.from(_selectedStores);
+    } else if (RecordsPage.cachedStores.isNotEmpty) {
+      _selectedStores.clear();
+      _selectedStores.addAll(RecordsPage.cachedStores);
+    }
+    // Restore days
+    final savedDays = prefs.getInt(_prefsDaysKey);
+    if (savedDays != null) {
+      _selectedDays = savedDays;
+      RecordsPage.cachedDays = savedDays;
+    } else {
+      _selectedDays = RecordsPage.cachedDays;
+    }
+    // Restore search results cache
     _results = RecordsPage.cachedResults;
     _hasSearched = RecordsPage.cachedHasSearched;
     _lastBarcode = RecordsPage.cachedBarcode;
@@ -85,14 +112,25 @@ class _RecordsPageState extends State<RecordsPage> {
     _lastDays = RecordsPage.cachedDays;
     _lastCustomStart = RecordsPage.cachedCustomStart;
     _lastCustomEnd = RecordsPage.cachedCustomEnd;
+    _customStart = RecordsPage.cachedCustomStart;
+    _customEnd = RecordsPage.cachedCustomEnd;
+    if (mounted) setState(() {});
 
-    if (widget.initialBarcode != null) {
-      _barcodeCtrl.text = widget.initialBarcode!;
-      // Auto-search only if barcode is new or never searched
-      if (!_hasSearched || widget.initialBarcode != RecordsPage.cachedBarcode) {
-        WidgetsBinding.instance.addPostFrameCallback((_) => _search());
+    // Auto-search only on first visit for this barcode
+    if (widget.initialBarcode != null && mounted) {
+      final barcode = widget.initialBarcode!;
+      if (!_hasSearched || barcode != RecordsPage.cachedBarcode) {
+        // Small delay to ensure UI is ready
+        await Future.delayed(const Duration(milliseconds: 100));
+        if (mounted) _search();
       }
     }
+  }
+
+  Future<void> _savePrefs() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(_prefsStoresKey, _selectedStores.toList());
+    await prefs.setInt(_prefsDaysKey, _selectedDays);
   }
 
   String _fmtDate(DateTime dt) =>
@@ -139,6 +177,10 @@ class _RecordsPageState extends State<RecordsPage> {
     }
 
     setState(() { _loading = true; _error = null; _results = []; });
+
+    // Log this search
+    final stores = _selectedStores.join('+');
+    await OperationLogService.add(store: stores, action: '查询库存明细', barcode: barcode);
 
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -282,8 +324,24 @@ class _RecordsPageState extends State<RecordsPage> {
         border: Border(bottom: BorderSide(color: AppConstants.dividerColor)),
       ),
       child: Column(children: [
-        // Barcode input + search button
+        // Barcode input + scan + search button
         Row(children: [
+          IconButton(
+            icon: const Icon(Icons.qr_code_scanner, size: 22, color: AppConstants.primaryColor),
+            tooltip: '扫码输入',
+            onPressed: () async {
+              final barcode = await Navigator.of(context).push<String>(
+                MaterialPageRoute(builder: (_) => ScannerView(
+                  onDetect: (b) => Navigator.pop(context, b),
+                  onClose: () => Navigator.pop(context),
+                )));
+              if (barcode != null && barcode.isNotEmpty) {
+                _barcodeCtrl.text = barcode;
+                _search();
+              }
+            },
+          ),
+          const SizedBox(width: 4),
           Expanded(child: TextField(
             controller: _barcodeCtrl,
             keyboardType: TextInputType.number,
@@ -293,7 +351,6 @@ class _RecordsPageState extends State<RecordsPage> {
               contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
               border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
               hintText: '输入条码',
-              prefixIcon: const Icon(Icons.qr_code, size: 18),
             ),
             onSubmitted: (_) => _search(),
           )),

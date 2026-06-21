@@ -1,0 +1,124 @@
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import '../utils/constants.dart';
+import '../services/operation_log_service.dart';
+
+class OperationLogsPage extends StatefulWidget {
+  const OperationLogsPage({super.key});
+
+  @override
+  State<OperationLogsPage> createState() => OperationLogsPageState();
+}
+
+class OperationLogsPageState extends State<OperationLogsPage> {
+  List<OperationLog> _logs = [];
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  void refresh() => _load();
+
+  Future<void> _load() async {
+    final logs = await OperationLogService.getAll();
+    if (mounted) setState(() { _logs = logs; _loading = false; });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('操作记录', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600)),
+        actions: [
+          if (_logs.isNotEmpty)
+            IconButton(
+              icon: const Icon(Icons.delete_outline, size: 20),
+              tooltip: '清空记录',
+              onPressed: () async {
+                final ok = await showDialog<bool>(context: context,
+                  builder: (ctx) => AlertDialog(
+                    title: const Text('清空操作记录'),
+                    content: const Text('确定要清空所有操作记录吗？'),
+                    actions: [
+                      TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+                      TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('清空', style: TextStyle(color: AppConstants.errorColor))),
+                    ],
+                  ),
+                );
+                if (ok == true) {
+                  await OperationLogService.clear();
+                  _load();
+                }
+              },
+            ),
+        ],
+      ),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : _logs.isEmpty
+              ? Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  const Icon(Icons.history, size: 48, color: AppConstants.textSecondary),
+                  const SizedBox(height: 12),
+                  const Text('暂无操作记录', style: TextStyle(color: AppConstants.textSecondary)),
+                  const SizedBox(height: 4),
+                  const Text('搜索商品、编辑库存、建档同步等操作会自动记录', style: TextStyle(fontSize: 12, color: AppConstants.textSecondary)),
+                ]))
+              : ListView.builder(
+                  padding: const EdgeInsets.all(16),
+                  itemCount: _logs.length,
+                  itemBuilder: (_, i) {
+                    final log = _logs[i];
+                    return Card(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      child: ListTile(
+                        onTap: () {
+                          Clipboard.setData(ClipboardData(text: log.barcode));
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text('已复制: ${log.barcode}', style: const TextStyle(fontSize: 13)),
+                              duration: const Duration(seconds: 1), behavior: SnackBarBehavior.floating, width: 300),
+                          );
+                        },
+                        dense: true,
+                        leading: _actionIcon(log.action),
+                        title: Row(children: [
+                          Text(log.action, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                          const Spacer(),
+                          Text(log.time, style: const TextStyle(fontSize: 11, color: AppConstants.textSecondary)),
+                        ]),
+                        subtitle: Row(children: [
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                            decoration: BoxDecoration(
+                              color: AppConstants.primaryColor.withValues(alpha: 0.1),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Text(log.store, style: const TextStyle(fontSize: 11, color: AppConstants.primaryColor)),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(child: Text(log.barcode, style: const TextStyle(fontSize: 11, color: AppConstants.textSecondary))),
+                          if (log.detail != null) ...[
+                            const SizedBox(width: 8),
+                            Text(log.detail!, style: const TextStyle(fontSize: 10, color: AppConstants.textSecondary)),
+                          ],
+                        ]),
+                      ),
+                    );
+                  },
+                ),
+    );
+  }
+
+  Widget _actionIcon(String action) {
+    IconData icon;
+    Color color;
+    if (action.contains('搜索')) { icon = Icons.search; color = AppConstants.primaryColor; }
+    else if (action.contains('新建')) { icon = Icons.add_box; color = AppConstants.warningColor; }
+    else if (action.contains('同步')) { icon = Icons.sync; color = AppConstants.successColor; }
+    else if (action.contains('编辑')) { icon = Icons.edit; color = AppConstants.primaryColor; }
+    else { icon = Icons.circle; color = AppConstants.textSecondary; }
+    return Icon(icon, size: 20, color: color);
+  }
+}

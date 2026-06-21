@@ -121,12 +121,13 @@ class VoiceTextNormalizer {
 
   int? _cnToArabic(String s) {
     if (s.isEmpty) return null;
-    // Already a plain number
     final d = int.tryParse(s);
     if (d != null) return d;
 
     int result = 0;
     int current = 0;
+    int lastUnit = 1;
+    bool hadZero = false; // "三百零六"=306, not 360
 
     for (int i = 0; i < s.length; i++) {
       final v = _cnDigit[s[i]];
@@ -134,22 +135,37 @@ class VoiceTextNormalizer {
 
       if (v == 10) {
         if (current == 0) current = 1;
-        // "十" at the start: 十五 → 15, not 10 + 5
-        // "五十三" → 5*10 + 3 = 53
         if (result == 0 && current == 1 && i == 1 && _cnDigit[s[0]] != 10) {
-          // Pattern: X十Y → X*10 + Y
           result = current * 10;
         } else {
           result += current * 10;
         }
         current = 0;
+        lastUnit = 10;
       } else if (v == 100) {
         if (current == 0) current = 1;
         result += current * 100;
         current = 0;
+        lastUnit = 100;
+        hadZero = false;
+      } else if (v == 1000) {
+        if (current == 0) current = 1;
+        result += current * 1000;
+        current = 0;
+        lastUnit = 1000;
+        hadZero = false;
+      } else if (v == 0) {
+        hadZero = true;
       } else {
         current = v;
       }
+    }
+    // Shorthand: "三百五"=350 (not 305), "一千三"=1300.
+    // Only when there's no 零 in between (so "三百零六" stays 306).
+    if (!hadZero && current > 0 && current < 10 && lastUnit == 100) {
+      current *= 10;
+    } else if (!hadZero && current > 0 && current < 100 && lastUnit == 1000) {
+      current *= 100;
     }
     result += current;
     return result > 0 ? result : null;

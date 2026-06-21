@@ -10,6 +10,7 @@ import '../models/printer_config.dart';
 import '../services/printer_config_service.dart';
 import '../services/store_service.dart';
 import '../services/model_service.dart';
+import '../services/auth_service.dart';
 import 'login_page.dart';
 
 class SettingsPage extends StatefulWidget {
@@ -19,8 +20,14 @@ class SettingsPage extends StatefulWidget {
 }
 
 class SettingsPageState extends State<SettingsPage> {
-  void onTabSelected() {
+  void onTabSelected() async {
     _loadHomophones();
+    // Reload server URL (may have been updated by auth dialog)
+    final p = await SharedPreferences.getInstance();
+    final svr = p.getString('server_url') ?? '';
+    if (svr != _serverUrlCtrl.text) {
+      _serverUrlCtrl.text = svr;
+    }
   }
   bool _isLoggedIn = false;
   bool _voiceEnabled = true;
@@ -93,6 +100,7 @@ class SettingsPageState extends State<SettingsPage> {
       _cBuy = prefs.getInt('col_buy') ?? 14;
       _lastLoginTime = prefs.getString('login_last_time') ?? '';
       _supplierCtrl.text = prefs.getString('supplier_list') ?? '';
+      _photoCount = prefs.getInt('photo_count') ?? 3;
       _serverUrlCtrl.text = prefs.getString('server_url') ?? '';
       _serverPwdCtrl.text = prefs.getString('server_password') ?? '';
       final ck = prefs.getString('cookie_$_storeKey');
@@ -228,7 +236,7 @@ class SettingsPageState extends State<SettingsPage> {
           const SizedBox(height: 8),
           _buildSubStoreCard(),
           const SizedBox(height: 20),
-          _section('店铺服务器（远程验证密码）'),
+          _section('店铺服务器'),
           const SizedBox(height: 8),
           _buildServerCard(),
           const SizedBox(height: 20),
@@ -244,7 +252,7 @@ class SettingsPageState extends State<SettingsPage> {
           const SizedBox(height: 8),
           _buildAppSettingsCard(),
           const SizedBox(height: 20),
-          const Center(child: Text('银豹入库 v1.0.0', style: TextStyle(fontSize: 12, color: AppConstants.textSecondary))),
+          const Center(child: Text('银豹入库 v1.0.1', style: TextStyle(fontSize: 12, color: AppConstants.textSecondary))),
           const SizedBox(height: 16),
         ]),
       ),
@@ -830,7 +838,7 @@ class SettingsPageState extends State<SettingsPage> {
         Expanded(child: TextField(controller: _serverUrlCtrl,
           style: const TextStyle(fontSize: 13),
           decoration: const InputDecoration(hintText: 'http://192.168.1.138', isDense: true, border: OutlineInputBorder(), contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 8)),
-          onChanged: (v) async { final p = await SharedPreferences.getInstance(); await p.setString('server_url', v.trim()); })),
+          onChanged: (v) async { final p = await SharedPreferences.getInstance(); await p.setString('server_url', AuthService.normalizeUrl(v)); })),
       ])),
     );
   }

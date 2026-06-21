@@ -315,7 +315,9 @@ class VoiceNluParser {
 
     double result = 0;
     double current = 0;
-    double section = 0; // for 万 (10k) grouping
+    double section = 0;
+    int lastUnit = 1;
+    bool hadZero = false;
     bool hasDigit = false;
 
     for (int i = 0; i < s.length; i++) {
@@ -328,18 +330,21 @@ class VoiceNluParser {
         if (current == 0) current = 1;
         result += current * 10;
         current = 0;
+        lastUnit = 10;
       } else if (v == 100) {
         if (current == 0) current = 1;
         result += current * 100;
         current = 0;
+        lastUnit = 100;
+        hadZero = false;
       } else if (v == 1000) {
         if (current == 0) current = 1;
         result += current * 1000;
         current = 0;
+        lastUnit = 1000;
+        hadZero = false;
       } else if (v == 10000) {
-        // 一万 → result=1, section=10000, 五万 → result=5*10000
         if (current == 0 && result == 0) {
-          // Leading "万" without preceding digit — assume 一万
           result = 1;
         } else if (current > 0) {
           result += current;
@@ -347,11 +352,20 @@ class VoiceNluParser {
         }
         section = result * 10000;
         result = 0;
+        lastUnit = 10000;
+        hadZero = false;
       } else if (v == 0.5) {
         current = 0.5;
+      } else if (v == 0) {
+        hadZero = true;
       } else {
         current = v.toDouble();
       }
+    }
+    if (!hadZero && current > 0 && current < 10 && lastUnit == 100) {
+      current *= 10;
+    } else if (!hadZero && current > 0 && current < 100 && lastUnit == 1000) {
+      current *= 100;
     }
     result += current;
     if (section > 0) result += section;

@@ -6,14 +6,15 @@ import 'package:path_provider/path_provider.dart';
 import '../utils/constants.dart';
 import '../widgets/scanner_view.dart';
 import '../services/query_service.dart';
+import '../services/operation_log_service.dart';
 import 'result_sheet.dart';
 
 class CameraPage extends StatefulWidget {
   const CameraPage({super.key});
-  @override State<CameraPage> createState() => _CameraPageState();
+  @override State<CameraPage> createState() => CameraPageState();
 }
 
-class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
+class CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
   CameraController? _controller;
   final List<File> _photos = [];
   bool _isTakingPhoto = false, _isSubmitting = false, _cameraActive = false, _isInitialized = false;
@@ -148,19 +149,21 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
 
   Future<void> _loadConfig() async {
     final prefs = await SharedPreferences.getInstance();
-    // Supplier list
     final saved = prefs.getString('supplier_list');
     if (saved != null && saved.isNotEmpty) {
       _supplierList.clear();
       final items = saved.split(',').map((s) => s.trim()).where((s) => s.isNotEmpty).toList()..sort();
       _supplierList.addAll(items);
     }
-    // Restore last selections
     _selectedStore = prefs.getString('last_store') ?? 'C1';
     _selectedSupplier = prefs.getString('last_supplier') ?? (_supplierList.isNotEmpty ? _supplierList.first : '');
     _maxPhotos = prefs.getInt('photo_count') ?? 3;
-    // Sync the search field to show the restored supplier
     if (mounted) setState(() {});
+  }
+
+  /// Called by HomePage when this tab becomes visible — refresh cached config
+  void onTabSelected() {
+    _loadConfig();
   }
   @override void dispose() { WidgetsBinding.instance.removeObserver(this); _controller?.dispose(); _barcodeCtrl.dispose(); _supplierSearchCtrl.dispose(); super.dispose(); }
 
@@ -189,7 +192,11 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
   }
 
   Future<void> _takePhoto() async {
-    if (_controller == null || !_controller!.value.isInitialized || _isTakingPhoto || _photos.length >= _maxPhotos) return;
+    // Re-read photo count from prefs each time (config may have changed)
+    final prefs = await SharedPreferences.getInstance();
+    final maxPhotos = prefs.getInt('photo_count') ?? _maxPhotos;
+    _maxPhotos = maxPhotos;
+    if (_controller == null || !_controller!.value.isInitialized || _isTakingPhoto || _photos.length >= maxPhotos) return;
     setState(() => _isTakingPhoto = true);
     try {
       final dir = await getTemporaryDirectory();
@@ -247,6 +254,9 @@ class _CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     } catch (e) { product = ProductData(error: '$e'); }
 
     Navigator.of(context).pop();
+
+    // Log search
+    OperationLogService.add(store: _selectedStore, action: '搜索条码', barcode: barcode);
 
     if (product == null || product!.error != null) {
       final err = product?.error ?? '';

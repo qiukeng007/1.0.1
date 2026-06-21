@@ -17,6 +17,7 @@ import '../services/query_service.dart';
 import '../services/voice_nlu_parser.dart';
 import '../services/voice_text_normalizer.dart';
 import '../services/model_service.dart';
+import '../services/operation_log_service.dart';
 import 'ocr_select_page.dart';
 import 'records_page.dart';
 
@@ -2365,6 +2366,8 @@ class _ResultSheetState extends State<ResultSheet> with TickerProviderStateMixin
         _showInline('✅ 同步完成: $synced 成功, $syncFailed 失败', isError: syncFailed > 0, duration: const Duration(seconds: 3));
         setState(() { _submitting = false; _submitted = true; });
         _saveLastCategory();
+        OperationLogService.add(store: widget.targetStore, action: '编辑库存', barcode: barcode,
+          detail: '同步${synced}店${syncFailed > 0 ? "(${syncFailed}失败)" : ""}');
       }
     } catch (e) {
       if (mounted) _showMsg('保存异常: $e', err: true);
@@ -2448,6 +2451,7 @@ class _ResultSheetState extends State<ResultSheet> with TickerProviderStateMixin
       qs.dispose();
 
       _saveLastCategory();
+      OperationLogService.add(store: widget.targetStore, action: '新建商品', barcode: _barcodeController.text.trim());
       if (mounted) setState(() { _submitting = false; _showDistribution = true;
         _distribution['总店'] = 0; _distribution['C1'] = 0; _distribution['C2'] = 0; _distribution['C3'] = 0;
         _distribution[widget.targetStore] = totalStock; });
@@ -2680,6 +2684,8 @@ class _ResultSheetState extends State<ResultSheet> with TickerProviderStateMixin
         _syncResults[e.key] = (se == null);
       }
       _saveLastCategory();
+      OperationLogService.add(store: widget.targetStore, action: '分配库存', barcode: _barcodeController.text.trim(),
+        detail: _distribution.entries.where((e) => e.value > 0).map((e) => '${e.key}+${e.value}').join(' '));
       if (mounted) setState(() => _submitted = true);
     } catch (e) {
       if (mounted) _showMsg('分配库存失败: $e', err: true);
