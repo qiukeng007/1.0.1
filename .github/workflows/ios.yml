@@ -28,24 +28,28 @@ jobs:
           flutter clean
           flutter pub get
 
-      - name: 🛠️ 暴力重建无暇版 Podfile
+      - name: 🛠️ 暴力重建无暇版 Podfile (强锁配置)
         run: |
+          echo "=== 覆写标准 Podfile ==="
           rm -f ios/Podfile
           cat << 'EOF' > ios/Podfile
           platform :ios, '15.2'
           ENV['COCOAPODS_DISABLE_STATS'] = 'true'
           project 'Runner', { 'Debug' => :debug, 'Profile' => :release, 'Release' => :release }
+          
           def flutter_root
             path = File.expand_path(File.join('..', 'Flutter', 'Generated.xcconfig'), __FILE__)
             File.foreach(path) { |line| matches = line.match(/FLUTTER_ROOT\=(.*)/); return matches[1].strip if matches }
           end
           require File.expand_path(File.join('packages', 'flutter_tools', 'bin', 'podhelper'), flutter_root)
           flutter_ios_podfile_setup
+          
           target 'Runner' do
             use_frameworks!
             use_modular_headers!
             flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
           end
+          
           post_install do |installer|
             installer.pods_project.targets.each do |target|
               flutter_additional_ios_build_settings(target)
@@ -58,7 +62,7 @@ jobs:
           end
           EOF
 
-      - name: 🚑 强制重置 AppDelegate (修复类型不匹配错误)
+      - name: 🚑 强制重置 AppDelegate (消除类型匹配报错)
         run: |
           cat << 'EOF' > ios/Runner/AppDelegate.swift
           import UIKit
@@ -75,9 +79,8 @@ jobs:
             }
           }
           EOF
-          echo "✅ AppDelegate.swift 已重置为标准模板"
 
-      - name: 🛠️ 物理硬修 .pub-cache 中的 DefaultCamera 源码补丁
+      - name: 🛠️ 修复 DefaultCamera 源码补丁
         run: |
           find /Users/runner/.pub-cache/ -name "DefaultCamera.swift" 2>/dev/null | while read -r target_file; do
             if ! grep -q "extension AVCaptureSession" "$target_file"; then
@@ -86,24 +89,27 @@ jobs:
             fi
           done
 
-      - name: 强行剥离 macOS 隐藏属性
-        run: sudo xattr -cr . || true
-
-      - name: Build Standard iOS Payload
+      - name: ⚡ Build Standard iOS Payload (带自动排错)
         run: |
-          set +e
-          flutter build ios --release --no-codesign --verbose > xcode_build.log 2>&1
-          if [ $? -ne 0 ]; then
-            echo "❌ 编译失败，提取日志："
-            tail -n 150 xcode_build.log
+          echo "开始构建，日志将同时输出并保存..."
+          set -o pipefail
+          # 使用 tee 保存日志，如果失败，自动 grep 关键报错行
+          flutter build ios --release --no-codesign --verbose 2>&1 | tee build_log.txt || {
+            echo "========================================"
+            echo "❌ 构建失败！以下是提取的关键错误信息："
+            echo "========================================"
+            # 过滤出包含 Error/Fail/Fatal 的关键行
+            grep -iE "error:|fatal|fail|exception" build_log.txt | tail -n 50
+            echo "========================================"
+            echo "请检查以上错误信息。"
             exit 1
-          fi
+          }
 
-      - name: ⚡ 组装 IPA 包
+      - name: 📦 组装 IPA 包
         run: |
           rm -rf final_zip && mkdir -p final_zip/Payload
           APP_PATH=$(find build/ios -name "Runner.app" -type d | head -n 1)
-          if [ -n "$APP_PATH" ] && [ -d "$APP_PATH" ]; then
+          if [ -n "$APP_PATH" ]; then
             cp -r "$APP_PATH" final_zip/Payload/
             cd final_zip && zip -r -y -q ready-to-sign.ipa Payload
           else
