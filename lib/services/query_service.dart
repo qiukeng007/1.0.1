@@ -884,7 +884,8 @@ class QueryService {
       final data = jsonDecode(body) as Map<String, dynamic>;
 
       if (data['successed'] != true) {
-        return StockHistoryResult(storeId: userId, storeName: storeName, error: '查询失败');
+        final msg = data['msg'] as String? ?? '查询失败';
+        return StockHistoryResult(storeId: userId, storeName: storeName, error: msg);
       }
 
       final logs = data['stockChangeLogs'] as List? ?? [];
@@ -893,12 +894,29 @@ class QueryService {
       for (var i = 0; i < logs.length; i++) {
         final log = logs[i] as Map<String, dynamic>;
         final exactStock = (log['exactStock'] as num?)?.toDouble();
+        final reduce = (log['reduceQuantity'] as num?)?.toDouble() ?? 0;
+        final increment = (log['incrementQuantity'] as num?)?.toDouble() ?? 0;
+        final update = (log['updateQuantity'] as num?)?.toDouble() ?? 0;
         final remark = log['remark'] as String? ?? '';
 
-        // Calculate stock change: try exactStock - previousStock first,
-        // then fall back to parsing "修改前库存：X" from remark
+        // Operator: CashierNameNumber for sales, fallback to operator fields
+        final operator = (log['CashierNameNumber'] ?? log['operatorName'] ?? log['operator'] ?? '-') as String;
+
+        // Calculate stock change
         double? stockChange;
-        if (exactStock != null && prevStock != null) {
+        if (reduce != 0) {
+          stockChange = -reduce;
+        } else if (increment != 0) {
+          stockChange = increment;
+        } else if (update != 0) {
+          // For sales: updateQuantity is positive, stock goes down → negative
+          final ct = (log['changeType'] as String? ?? '').toLowerCase();
+          if (ct.contains('sell') || ct.contains('sale')) {
+            stockChange = -update;
+          } else {
+            stockChange = update;
+          }
+        } else if (exactStock != null && prevStock != null) {
           stockChange = exactStock - prevStock;
         } else if (exactStock != null) {
           final prevMatch = RegExp(r'修改前库存[：:]?\s*([\d.]+)').firstMatch(remark);
@@ -911,7 +929,7 @@ class QueryService {
         records.add(StockChangeRecord(
           index: i + 1,
           time: log['dateTime'] as String? ?? '',
-          operator: '-',
+          operator: operator,
           changeType: _mapChangeType(log['changeType'] as String? ?? ''),
           stockChange: stockChange,
           correctedStock: exactStock,
@@ -935,15 +953,15 @@ class QueryService {
 
   /// Map Pospal changeType codes to Chinese display text
   String _mapChangeType(String code) {
-    switch (code) {
-      case 'editStock': return '编辑库存';
-      case 'sale': return '销售出库';
-      case 'return': return '客户退货';
-      case 'stockIn': return '货流进货';
-      case 'stockOut': return '货流调出';
+    switch (code.toLowerCase()) {
+      case 'editstock': return '编辑库存';
+      case 'sale': case 'stocksell': return '商品销售';
+      case 'return': case 'stockreturn': return '客户退货';
+      case 'stockin': return '货流进货';
+      case 'stockout': return '货流调出';
       case 'loss': return '商品报损';
       case 'unpack': return '组装拆分';
-      case 'antiCheckout': return '反结账';
+      case 'anticheckout': return '反结账';
       default: return code;
     }
   }

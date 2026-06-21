@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 class AppConstants {
   static const String appName = '智慧眼';
+  static const String appVersion = 'v1.0.1';
   static const String defaultBaseUrl = 'https://beta28.pospal.cn';
 
   // Colors

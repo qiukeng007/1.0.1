@@ -252,7 +252,7 @@ class SettingsPageState extends State<SettingsPage> {
           const SizedBox(height: 8),
           _buildAppSettingsCard(),
           const SizedBox(height: 20),
-          const Center(child: Text('银豹入库 v1.0.1', style: TextStyle(fontSize: 12, color: AppConstants.textSecondary))),
+          Center(child: Text('银豹入库 ${AppConstants.appVersion}', style: const TextStyle(fontSize: 12, color: AppConstants.textSecondary))),
           const SizedBox(height: 16),
         ]),
       ),
