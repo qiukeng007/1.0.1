@@ -25,7 +25,6 @@ import WebKit
       }
     }
 
-    GeneratedPluginRegistrant.register(with: self.pluginRegistry)
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 
