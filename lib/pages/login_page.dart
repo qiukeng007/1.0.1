@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -28,6 +29,7 @@ class _LoginPageState extends State<LoginPage> {
   bool _loading = true;
   bool _qrReady = false;
   bool _loggedIn = false;
+  Timer? _pollTimer;
 
   @override
   void initState() {
@@ -35,26 +37,18 @@ class _LoginPageState extends State<LoginPage> {
     _controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..addJavaScriptChannel('flutterQRReady', onMessageReceived: (_) {
-        setState(() => _qrReady = true);
-      })
-      ..addJavaScriptChannel('flutterLoginDone', onMessageReceived: (msg) {
-        if (msg.message == 'done' || msg.message == 'reload') {
-          _controller.reload();
+        if (!_qrReady) {
+          setState(() => _qrReady = true);
+          _startPolling();
         }
       })
       ..setUserAgent('Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36')
       ..setNavigationDelegate(NavigationDelegate(
-        onNavigationRequest: (request) {
-          return NavigationDecision.navigate;
-        },
-        onPageStarted: (url) {
-          debugPrint('WebView navigating: $url');
-        },
+        onNavigationRequest: (request) => NavigationDecision.navigate,
         onPageFinished: (url) {
           setState(() => _loading = false);
-          debugPrint('WebView finished: $url');
-
           if (url.contains('/Product/Manage')) {
+            _stopPolling();
             _onLoginSuccess();
           } else if (url.contains('signin') || url.contains('login') || url.contains('account')) {
             _injectAutoFill();
@@ -67,6 +61,26 @@ class _LoginPageState extends State<LoginPage> {
       ..loadRequest(Uri.parse(
         '${widget.baseUrl}/account/signin?ReturnUrl=%2fProduct%2fManage',
       ));
+  }
+
+  void _startPolling() {
+    _pollTimer?.cancel();
+    _pollTimer = Timer.periodic(const Duration(seconds: 4), (_) {
+      if (!_qrReady || _loggedIn) return;
+      _controller.reload();
+    });
+  }
+
+  void _stopPolling() {
+    _pollTimer?.cancel();
+    _pollTimer = null;
+  }
+
+  @override
+  void dispose() {
+    _stopPolling();
+    super.dispose();
+  }
   }
 
   Future<void> _injectAutoFill() async {
@@ -110,20 +124,6 @@ class _LoginPageState extends State<LoginPage> {
           var qrDiv = document.getElementById('wxLoginQrcodeDiv');
           if (qrDiv && qrDiv.innerHTML.trim() !== '') {
             window.flutterQRReady.postMessage('ready');
-            // Start polling: check every 3s if WeChat confirmed
-            var pollCount = 0;
-            setInterval(function() {
-              pollCount++;
-              // If QR div disappeared or page redirected, login happened
-              var qrNow = document.getElementById('wxLoginQrcodeDiv');
-              if (!qrNow || qrNow.innerHTML.trim() === '' || window.location.href.indexOf('/Product/Manage') !== -1) {
-                window.flutterLoginDone.postMessage('done');
-              }
-              // Also try reload to pick up session cookie after enough time
-              if (pollCount >= 15) {
-                window.flutterLoginDone.postMessage('reload');
-              }
-            }, 3000);
           }
         }, 1000);
       }
