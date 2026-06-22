@@ -3,7 +3,7 @@ workflows:
     name: iOS Build
     environment:
       flutter: 3.41.2
-      xcode: 16.0
+      xcode: latest
       cocoapods: default
     scripts:
       - name: Install dependencies
