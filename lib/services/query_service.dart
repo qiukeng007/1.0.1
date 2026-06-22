@@ -795,16 +795,27 @@ class QueryService {
       req.write(data);
       final resp = await req.close().timeout(const Duration(seconds: 15));
       final body = await resp.transform(utf8.decoder).join();
-      if (resp.statusCode != 200) return '同步失败 HTTP ${resp.statusCode}';
-      final result = jsonDecode(body) as Map<String, dynamic>;
-        if (result['successed'] != true) return result['msg'] as String? ?? '同步失败';
-        return null;
-      } finally {
-        copyClient.close();
+
+      if (resp.statusCode == 302) {
+        final loc = resp.headers.value('location') ?? '';
+        if (loc.contains('signin')) return '登录已过期';
       }
-    } catch (e) {
-      return '同步异常: $e';
+      if (resp.statusCode != 200) return '同步失败 HTTP ${resp.statusCode}';
+
+      if (body.trim().startsWith('<')) {
+        if (body.contains('signin') || body.contains('SignIn')) return '登录已过期';
+        return '同步失败: 服务器错误';
+      }
+
+      final result = jsonDecode(body) as Map<String, dynamic>;
+      if (result['successed'] != true) return result['msg'] as String? ?? '同步失败';
+      return null;
+    } finally {
+      copyClient.close();
     }
+  } catch (e) {
+    return '同步异常: $e';
+  }
   }
 
   /// Save product directly from a pre-built JSON (for new products)
