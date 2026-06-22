@@ -23,7 +23,7 @@ class LoginPage extends StatefulWidget {
   State<LoginPage> createState() => _LoginPageState();
 }
 
-class _LoginPageState extends State<LoginPage> {
+class _LoginPageState extends State<LoginPage> with WidgetsBindingObserver {
   late final WebViewController _controller;
   bool _loading = true;
   bool _qrReady = false;
@@ -32,8 +32,12 @@ class _LoginPageState extends State<LoginPage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..addJavaScriptChannel('flutterQRReady', onMessageReceived: (_) {
+        setState(() => _qrReady = true);
+      })
       ..setUserAgent('Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36')
       ..setNavigationDelegate(NavigationDelegate(
         onNavigationRequest: (request) {
@@ -98,7 +102,6 @@ class _LoginPageState extends State<LoginPage> {
       })();
 
       function setQRReady() {
-        // Check if QR code popup appears
         setTimeout(function() {
           var qrDiv = document.getElementById('wxLoginQrcodeDiv');
           if (qrDiv && qrDiv.innerHTML.trim() !== '') {
@@ -159,6 +162,20 @@ class _LoginPageState extends State<LoginPage> {
     } catch (e) {
       if (mounted) Navigator.of(context).pop(true);
     }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && _qrReady && !_loggedIn) {
+      // User returned from WeChat — reload to pick up session cookie
+      _controller.reload();
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
   }
 
   @override
