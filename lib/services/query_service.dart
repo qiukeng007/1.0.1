@@ -638,6 +638,11 @@ class QueryService {
       }
       if (saveResp.statusCode != 200) return '保存失败 HTTP ${saveResp.statusCode}';
 
+      if (saveBody.trim().startsWith('<')) {
+        if (saveBody.contains('signin') || saveBody.contains('SignIn')) return '登录已过期，请重新登录';
+        return '服务器错误，请重新登录后再试';
+      }
+
       final saveResult = jsonDecode(saveBody) as Map<String, dynamic>;
       if (saveResult['successed'] != true) return saveResult['msg'] as String? ?? '保存失败';
       return null;
@@ -729,7 +734,20 @@ class QueryService {
       req.write(saveData);
       final resp = await req.close().timeout(const Duration(seconds: 15));
       final body = await resp.transform(utf8.decoder).join();
+
+      // Check for redirect (session expired)
+      if (resp.statusCode == 302) {
+        final loc = resp.headers.value('location') ?? '';
+        if (loc.contains('signin')) return '登录已过期，请重新登录';
+      }
       if (resp.statusCode != 200) return '保存失败 HTTP ${resp.statusCode}';
+
+      // Detect HTML error page (not JSON)
+      if (body.trim().startsWith('<')) {
+        if (body.contains('signin') || body.contains('SignIn')) return '登录已过期，请重新登录';
+        return '服务器错误，请检查条码是否已存在或重新登录';
+      }
+
       final result = jsonDecode(body) as Map<String, dynamic>;
       if (result['successed'] != true) return result['msg'] as String? ?? '保存失败';
       return null;
