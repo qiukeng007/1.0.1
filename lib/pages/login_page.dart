@@ -23,7 +23,7 @@ class LoginPage extends StatefulWidget {
   State<LoginPage> createState() => _LoginPageState();
 }
 
-class _LoginPageState extends State<LoginPage> with WidgetsBindingObserver {
+class _LoginPageState extends State<LoginPage> {
   late final WebViewController _controller;
   bool _loading = true;
   bool _qrReady = false;
@@ -32,11 +32,15 @@ class _LoginPageState extends State<LoginPage> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addObserver(this);
     _controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..addJavaScriptChannel('flutterQRReady', onMessageReceived: (_) {
         setState(() => _qrReady = true);
+      })
+      ..addJavaScriptChannel('flutterLoginDone', onMessageReceived: (msg) {
+        if (msg.message == 'done' || msg.message == 'reload') {
+          _controller.reload();
+        }
       })
       ..setUserAgent('Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36')
       ..setNavigationDelegate(NavigationDelegate(
@@ -106,6 +110,20 @@ class _LoginPageState extends State<LoginPage> with WidgetsBindingObserver {
           var qrDiv = document.getElementById('wxLoginQrcodeDiv');
           if (qrDiv && qrDiv.innerHTML.trim() !== '') {
             window.flutterQRReady.postMessage('ready');
+            // Start polling: check every 3s if WeChat confirmed
+            var pollCount = 0;
+            setInterval(function() {
+              pollCount++;
+              // If QR div disappeared or page redirected, login happened
+              var qrNow = document.getElementById('wxLoginQrcodeDiv');
+              if (!qrNow || qrNow.innerHTML.trim() === '' || window.location.href.indexOf('/Product/Manage') !== -1) {
+                window.flutterLoginDone.postMessage('done');
+              }
+              // Also try reload to pick up session cookie after enough time
+              if (pollCount >= 15) {
+                window.flutterLoginDone.postMessage('reload');
+              }
+            }, 3000);
           }
         }, 1000);
       }
@@ -162,20 +180,6 @@ class _LoginPageState extends State<LoginPage> with WidgetsBindingObserver {
     } catch (e) {
       if (mounted) Navigator.of(context).pop(true);
     }
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed && _qrReady && !_loggedIn) {
-      // User returned from WeChat — reload to pick up session cookie
-      _controller.reload();
-    }
-  }
-
-  @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    super.dispose();
   }
 
   @override
