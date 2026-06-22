@@ -34,24 +34,25 @@ class _LoginPageState extends State<LoginPage> {
     super.initState();
     _controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..setUserAgent('Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36')
       ..setNavigationDelegate(NavigationDelegate(
         onNavigationRequest: (request) {
-          // Allow all navigation (including weixin:// callbacks)
           return NavigationDecision.navigate;
+        },
+        onPageStarted: (url) {
+          debugPrint('WebView navigating: $url');
         },
         onPageFinished: (url) {
           setState(() => _loading = false);
+          debugPrint('WebView finished: $url');
 
-          // Check if login succeeded — target: /Product/Manage
           if (url.contains('/Product/Manage')) {
             _onLoginSuccess();
           } else if (url.contains('signin') || url.contains('login') || url.contains('account')) {
-            // Auto-fill form + switch to employee login
             _injectAutoFill();
           }
         },
         onWebResourceError: (error) {
-          // Log navigation errors for debugging
           debugPrint('WebView error: ${error.description}');
         },
       ))
