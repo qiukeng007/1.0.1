@@ -3,23 +3,10 @@ workflows:
     name: iOS Build
     environment:
       flutter: 3.41.2
-      xcode: 15.4
-      cocoapods: 1.16.2
+      cocoapods: default
     scripts:
       - name: Install dependencies
         script: flutter pub get
-      - name: Disable code signing
-        script: |
-          sed -i '' 's/CODE_SIGN_STYLE = Automatic;/CODE_SIGN_STYLE = Manual;/g' ios/Runner.xcodeproj/project.pbxproj
-          sed -i '' 's/"CODE_SIGN_IDENTITY\[sdk=iphoneos\*\]" = "iPhone Developer";/"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "";/g' ios/Runner.xcodeproj/project.pbxproj
-          mkdir -p ios/Flutter
-          cat >> ios/Flutter/Generated.xcconfig << 'EOF'
-          CODE_SIGNING_ALLOWED=NO
-          CODE_SIGNING_REQUIRED=NO
-          CODE_SIGN_IDENTITY=
-          PROVISIONING_PROFILE_SPECIFIER=
-          DEVELOPMENT_TEAM=
-          EOF
       - name: Build iOS
         script: flutter build ios --release --no-codesign
     artifacts:

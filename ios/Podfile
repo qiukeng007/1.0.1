@@ -1,21 +1,5 @@
 platform :ios, '15.0'
 
-ENV['COCOAPODS_DISABLE_STATS'] = 'true'
-
-# Load Flutter's pod helper — uses FLUTTER_ROOT env var (set by Codemagic)
-flutter_root = ENV['FLUTTER_ROOT']
-if flutter_root.nil? || flutter_root.empty?
-  # Fallback: try to find Flutter relative to project
-  generated = File.expand_path(File.join('..', 'Flutter', 'ephemeral', 'FLUTTER_ROOT'), __FILE__)
-  if File.exist?(generated)
-    flutter_root = File.read(generated).strip
-  end
-end
-if flutter_root && !flutter_root.empty?
-  podhelper = File.join(flutter_root, 'packages', 'flutter_tools', 'bin', 'podhelper.rb')
-  require podhelper if File.exist?(podhelper)
-end
-
 target 'Runner' do
   use_frameworks!
   use_modular_headers!
@@ -27,10 +11,6 @@ target 'Runner' do
       flutter_additional_ios_build_settings(target)
       target.build_configurations.each do |config|
         config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
-        config.build_settings['CODE_SIGNING_ALLOWED'] = 'NO'
-        config.build_settings['CODE_SIGNING_REQUIRED'] = 'NO'
-        config.build_settings['CODE_SIGN_IDENTITY'] = ''
-        config.build_settings['PROVISIONING_PROFILE_SPECIFIER'] = ''
       end
     end
   end
