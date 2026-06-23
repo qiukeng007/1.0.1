@@ -4,6 +4,8 @@ import WebKit
 
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
+  private var webViewUserScriptInstalled = false
+
   override func application(
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
@@ -18,6 +20,8 @@ import WebKit
             result("")
             return
           }
+          // Opportunistically install the WKUserScript on first cookie call
+          self.installWindowOpenOverrideIfNeeded()
           self.getCookies(for: url, result: result)
         } else {
           result(FlutterMethodNotImplemented)
@@ -26,6 +30,49 @@ import WebKit
     }
 
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
+  }
+
+  /// Walk the view hierarchy to find WKWebView instances and inject a
+  /// document-start user script that converts window.open() calls into
+  /// direct navigations.  WKWebView's createWebViewWith returns nil by
+  /// default (the plugin does not create popup windows), so window.open
+  /// is silently dropped — this script fixes that at the source.
+  private func installWindowOpenOverrideIfNeeded() {
+    guard !webViewUserScriptInstalled else { return }
+    guard let rootView = window?.rootViewController?.view else { return }
+
+    if let webView = findWKWebView(in: rootView) {
+      let scriptSource = """
+        window.open=function(u,t,f){\
+          if(u&&typeof u==='string'&&u!==''&&u!=='about:blank'){\
+            try{window.location.href=u;}catch(e){}\
+            try{window.location.replace(u);}catch(e){}\
+          }\
+          return window;\
+        };
+        """
+      let userScript = WKUserScript(
+        source: scriptSource,
+        injectionTime: .atDocumentStart,
+        forMainFrameOnly: false
+      )
+      webView.configuration.userContentController.addUserScript(userScript)
+      webViewUserScriptInstalled = true
+      NSLog("[SmartEye] WKUserScript installed: window.open → window.location override")
+    }
+  }
+
+  /// Depth-first search for a WKWebView in the view hierarchy.
+  private func findWKWebView(in view: UIView) -> WKWebView? {
+    if let webView = view as? WKWebView {
+      return webView
+    }
+    for subview in view.subviews {
+      if let found = findWKWebView(in: subview) {
+        return found
+      }
+    }
+    return nil
   }
 
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {

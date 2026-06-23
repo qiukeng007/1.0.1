@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io' show Platform;
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -25,11 +26,12 @@ class LoginPage extends StatefulWidget {
   State<LoginPage> createState() => _LoginPageState();
 }
 
-class _LoginPageState extends State<LoginPage> {
+class _LoginPageState extends State<LoginPage> with WidgetsBindingObserver {
   late final WebViewController _controller;
   bool _loading = true;
   bool _qrReady = false;
   bool _loggedIn = false;
+  bool _reloading = false;
   Timer? _pollTimer;
   Timer? _urlPollTimer;
 
@@ -46,19 +48,25 @@ class _LoginPageState extends State<LoginPage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+
     _controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setUserAgent(_userAgent)
       ..setNavigationDelegate(NavigationDelegate(
-        onNavigationRequest: (request) => NavigationDecision.navigate,
+        // Log every navigation request for debugging WeChat OAuth redirects
+        onNavigationRequest: (request) {
+          debugPrint('🔀 WebView nav: ${request.url}');
+          return NavigationDecision.navigate;
+        },
         onPageFinished: (url) {
           setState(() => _loading = false);
+          debugPrint('📄 Page finished: $url');
           if (url.contains('/Product/Manage')) {
             _stopPolling();
             _onLoginSuccess();
           } else if (url.contains('signin') || url.contains('login') || url.contains('account')) {
             _injectAutoFill();
-            // Delay polling start — let QR code render first (auto-fill takes ~1.5s)
             if (!_qrReady) {
               _qrReady = true;
               Future.delayed(const Duration(seconds: 10), () {
@@ -68,12 +76,54 @@ class _LoginPageState extends State<LoginPage> {
           }
         },
         onWebResourceError: (error) {
-          debugPrint('WebView error: ${error.description}');
+          debugPrint('❌ WebView error: ${error.description} (${error.url})');
         },
       ))
       ..loadRequest(Uri.parse(
         '${widget.baseUrl}/account/signin?ReturnUrl=%2fProduct%2fManage',
       ));
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && _qrReady && !_loggedIn && mounted) {
+      debugPrint('🔄 App resumed — triggering page reload to recover from possible stuck state');
+      _reloadPage();
+    }
+  }
+
+  /// Reload the current page to recover from WKWebView silently dropping
+  /// window.open() calls or JS polling being suspended in background.
+  Future<void> _reloadPage() async {
+    if (_reloading || _loggedIn) return;
+    _reloading = true;
+    try {
+      // First check if we already have cookies (quick path)
+      const channel = MethodChannel('com.smarteye/cookies');
+      final cookieStr = await channel.invokeMethod('getCookies', {
+        'url': widget.baseUrl,
+      }) as String? ?? '';
+      if (cookieStr.isNotEmpty) {
+        _onLoginSuccess();
+        _reloading = false;
+        return;
+      }
+      // Check if we're already on the target page
+      final currentUrl = await _controller.currentUrl();
+      if (currentUrl != null && currentUrl.contains('/Product/Manage')) {
+        _onLoginSuccess();
+        _reloading = false;
+        return;
+      }
+      // Reload — server should redirect to Product/Manage if already authenticated
+      await _controller.reload();
+    } catch (_) {
+      await _controller.loadRequest(Uri.parse(
+        '${widget.baseUrl}/account/signin?ReturnUrl=%2fProduct%2fManage',
+      ));
+    }
+    _reloading = false;
+    setState(() {});
   }
 
   void _startPolling() {
@@ -117,12 +167,31 @@ class _LoginPageState extends State<LoginPage> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _stopPolling();
     super.dispose();
   }
 
   Future<void> _injectAutoFill() async {
     if (_loggedIn) return;
+
+    // CRITICAL: Override window.open BEFORE the page's scripts use it.
+    // WKWebView's createWebViewWith returns nil, which silently drops all
+    // window.open() calls. This converts popups into direct navigations so
+    // WeChat OAuth redirects actually work.
+    await _controller.runJavaScript('''
+      (function() {
+        var _nativeOpen = window.open;
+        window.open = function(url, target, features) {
+          if (url && typeof url === 'string' && url !== '' && url !== 'about:blank') {
+            try { window.location.href = url; } catch(e) {}
+            try { window.location.replace(url); } catch(e) {}
+          }
+          return window;
+        };
+        console.log('[SmartEye] window.open overridden for WKWebView compatibility');
+      })();
+    ''');
 
     final js = '''
       (function() {
@@ -227,6 +296,12 @@ class _LoginPageState extends State<LoginPage> {
       appBar: AppBar(
         title: const Text('微信扫码登录', style: TextStyle(fontSize: 16)),
         actions: [
+          if (_qrReady && !_loggedIn)
+            IconButton(
+              icon: const Icon(Icons.refresh, size: 22),
+              tooltip: '刷新页面',
+              onPressed: _reloading ? null : () => _reloadPage(),
+            ),
           if (_loading)
             const Padding(
               padding: EdgeInsets.only(right: 16),
