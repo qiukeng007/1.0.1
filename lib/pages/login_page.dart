@@ -1,10 +1,8 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import '../utils/constants.dart';
@@ -34,6 +32,7 @@ class _LoginPageState extends State<LoginPage> with WidgetsBindingObserver {
   bool _qrReady = false;
   bool _loggedIn = false;
   bool _reloading = false;
+  bool _wechatCallbackSeen = false;
   Timer? _pollTimer;
   Timer? _urlPollTimer;
 
@@ -59,18 +58,56 @@ class _LoginPageState extends State<LoginPage> with WidgetsBindingObserver {
         onMessageReceived: _onPageMessage,
       )
       ..setNavigationDelegate(NavigationDelegate(
-        // Log every navigation request for debugging WeChat OAuth redirects
         onNavigationRequest: (request) {
-          debugPrint('🔀 WebView nav: ${request.url}');
+          final url = request.url;
+          debugPrint('🔀 WebView nav: $url');
+
+          // KEY INSIGHT: UserLoginByWx is the WeChat OAuth callback URL.
+          // Its presence means WeChat scan was confirmed and pospal received
+          // the auth code. The subsequent redirect chain (UserLoginByWx →
+          // Signin?LoginByWx=true → HOme/Product/Manage) can break on WKWebView
+          // (empty msg=, double consumption of auth code, cookie drop).
+          //
+          // Fix: when we see UserLoginByWx, remember it. When the next page
+          // finishes loading, if it's stuck on Signin?LoginByWx=true (not the
+          // target page), force-navigate to /Product/Manage.
+          if (url.contains('UserLoginByWx')) {
+            _wechatCallbackSeen = true;
+            debugPrint('✅ WeChat OAuth callback detected — scan confirmed!');
+          }
+
+          // If we're navigating to Signin?LoginByWx=true but we already saw
+          // the WeChat callback, this is likely a failed re-processing attempt.
+          // Allow it but flag for intervention.
+          if (url.contains('LoginByWx=true')) {
+            debugPrint('⚠️ LoginByWx redirect — msg param may be empty (iOS bug)');
+          }
+
           return NavigationDecision.navigate;
         },
         onPageFinished: (url) {
           setState(() => _loading = false);
           debugPrint('📄 Page finished: $url');
-          if (url.contains('/Product/Manage')) {
+
+          if (url.contains('/Product/Manage') || url.contains('/Home')) {
             _stopPolling();
             _onLoginSuccess();
-          } else if (url.contains('signin') || url.contains('login') || url.contains('account')) {
+            return;
+          }
+
+          // WeChat callback seen, but page landed on Signin instead of target.
+          // The intermediate redirect failed — force-navigate to target.
+          if (_wechatCallbackSeen && url.contains('LoginByWx=true')) {
+            debugPrint('🔄 WeChat callback seen but stuck at LoginByWx — '
+                'forcing navigation to /Product/Manage');
+            _stopPolling();
+            _controller.loadRequest(
+              Uri.parse('${widget.baseUrl}/Product/Manage'),
+            );
+            return;
+          }
+
+          if (url.contains('signin') || url.contains('login') || url.contains('account')) {
             _injectAutoFill();
             if (!_qrReady) {
               _qrReady = true;
@@ -99,9 +136,21 @@ class _LoginPageState extends State<LoginPage> with WidgetsBindingObserver {
     // URL changed to target page
     if (text.startsWith('url:')) {
       final url = text.substring(4);
-      if (url.contains('/Product/Manage')) {
+      if (url.contains('/Product/Manage') || url.contains('/Home')) {
         _stopPolling();
         _onLoginSuccess();
+        return;
+      }
+      // WeChat OAuth callback detected via JS
+      if (url.contains('UserLoginByWx')) {
+        _wechatCallbackSeen = true;
+        debugPrint('✅ JS detected WeChat callback');
+      }
+      // Stuck on LoginByWx after callback — force navigate
+      if (_wechatCallbackSeen && url.contains('LoginByWx=true')) {
+        debugPrint('🔄 JS: stuck at LoginByWx, forcing /Product/Manage');
+        _stopPolling();
+        _controller.loadRequest(Uri.parse('${widget.baseUrl}/Product/Manage'));
         return;
       }
       // Login form disappeared = likely redirected
@@ -121,6 +170,20 @@ class _LoginPageState extends State<LoginPage> with WidgetsBindingObserver {
     if (text == 'qr_div_gone') {
       debugPrint('⚠️ QR code div disappeared — checking login state');
       _checkCookiesAndLogin();
+    }
+
+    // WebView-internal fetch probe result
+    // probe:200:basic → authenticated (no redirect)
+    // probe:0:opaqueredirect → redirected (still on signin)
+    if (text.startsWith('probe:')) {
+      final parts = text.substring(6).split(':');
+      final statusCode = int.tryParse(parts[0]) ?? 0;
+      debugPrint('🔍 WebView probe result: status=$statusCode (${parts.join(":")})');
+      if (statusCode == 200) {
+        debugPrint('✅ WebView probe: authenticated — navigating to Product/Manage');
+        _stopPolling();
+        _controller.loadRequest(Uri.parse('${widget.baseUrl}/Product/Manage'));
+      }
     }
   }
 
@@ -238,67 +301,42 @@ class _LoginPageState extends State<LoginPage> with WidgetsBindingObserver {
       } catch (_) {}
     });
 
-    // Polling strategy 3: Dart HTTP probe (every 15s).
-    // Makes a direct HTTP request to /Product/Manage with WebView cookies.
-    // This bypasses WebView JavaScript entirely — if the server has
-    // authenticated the session, we detect it even if the page is stuck.
-    _startHttpProbing();
+    // Polling strategy 3: WebView-internal fetch probe (every 8s).
+    // fetch() runs INSIDE the WebView's JS context, sharing its session/cookies.
+    // Uses redirect: 'manual' — a 200 response means we're authenticated
+    // (no redirect to signin), while an opaque response means still redirected.
+    _startWebViewProbing();
   }
 
-  Timer? _httpProbeTimer;
-  int _httpProbeCount = 0;
+  Timer? _webViewProbeTimer;
+  int _webViewProbeCount = 0;
 
-  void _startHttpProbing() {
-    _httpProbeTimer?.cancel();
-    _httpProbeTimer = Timer.periodic(const Duration(seconds: 15), (_) async {
+  void _startWebViewProbing() {
+    _webViewProbeTimer?.cancel();
+    _webViewProbeTimer = Timer.periodic(const Duration(seconds: 8), (_) async {
       if (_loggedIn) return;
-      _httpProbeCount++;
+      _webViewProbeCount++;
       try {
-        // Get cookies from WKWebView's cookie store
-        const channel = MethodChannel('com.smarteye/cookies');
-        final cookieStr = await channel.invokeMethod('getCookies', {
-          'url': widget.baseUrl,
-        }) as String? ?? '';
-
-        // Probe the target page directly via HTTP
-        final response = await http.get(
-          Uri.parse('${widget.baseUrl}/Product/Manage'),
-          headers: {
-            'User-Agent': _userAgent,
-            if (cookieStr.isNotEmpty) 'Cookie': cookieStr,
-          },
-        ).timeout(const Duration(seconds: 8));
-
-        debugPrint('🔍 HTTP probe #$_httpProbeCount: status=${response.statusCode}, '
-            'redirects=${response.request?.url}, cookies=$cookieStr');
-
-        // If we get 200 AND not redirected to signin, we're authenticated
-        final finalUrl = response.request?.url.toString() ?? '';
-        if (response.statusCode == 200 && !finalUrl.contains('signin') && !finalUrl.contains('login')) {
-          debugPrint('✅ HTTP probe: server says authenticated!');
-          _stopPolling();
-          _onLoginSuccess();
-          return;
-        }
-
-        // Check if response set any cookies — capture them
-        final setCookie = response.headers['set-cookie'];
-        if (setCookie != null && setCookie.isNotEmpty) {
-          debugPrint('🍪 HTTP probe: server set cookies: $setCookie');
-          // Store these cookies combined with existing ones
-          final combined = cookieStr.isNotEmpty
-              ? '$cookieStr; $setCookie'
-              : setCookie;
-          if (combined.isNotEmpty) {
-            final prefs = await SharedPreferences.getInstance();
-            final storeKey = '${widget.baseUrl}|${widget.account}|${widget.cashierJobNumber}';
-            await prefs.setString('cookie_$storeKey', combined);
-            _stopPolling();
-            _onLoginSuccess();
-          }
-        }
+        // Run fetch INSIDE the WebView — shares its session & cookies
+        final result = await _controller.runJavaScriptReturningResult('''
+          (function() {
+            try {
+              fetch('/Product/Manage', { redirect: 'manual', cache: 'no-store' })
+                .then(function(r) {
+                  SmartEyeChannel.postMessage('probe:' + r.status + ':' + r.type);
+                })
+                .catch(function(e) {
+                  SmartEyeChannel.postMessage('probe_error:' + e.message);
+                });
+              return 'sent';
+            } catch(e) {
+              return 'error:' + e.toString();
+            }
+          })();
+        ''');
+        debugPrint('🔍 WebView probe #$_webViewProbeCount: $result');
       } catch (e) {
-        debugPrint('❌ HTTP probe error: $e');
+        debugPrint('❌ WebView probe error: $e');
       }
     });
   }
@@ -308,8 +346,8 @@ class _LoginPageState extends State<LoginPage> with WidgetsBindingObserver {
     _pollTimer = null;
     _urlPollTimer?.cancel();
     _urlPollTimer = null;
-    _httpProbeTimer?.cancel();
-    _httpProbeTimer = null;
+    _webViewProbeTimer?.cancel();
+    _webViewProbeTimer = null;
   }
 
   @override
