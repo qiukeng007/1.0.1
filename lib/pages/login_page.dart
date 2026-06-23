@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -30,13 +31,24 @@ class _LoginPageState extends State<LoginPage> {
   bool _qrReady = false;
   bool _loggedIn = false;
   Timer? _pollTimer;
+  Timer? _urlPollTimer;
+
+  /// Platform-aware User-Agent — critical for WeChat OAuth redirect compatibility.
+  /// iOS WKWebView must NOT pretend to be Android Chrome, or WeChat's JS bridge
+  /// will use Android-specific redirect methods that fail silently on WKWebView.
+  static String get _userAgent {
+    if (Platform.isIOS) {
+      return 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
+    }
+    return 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
+  }
 
   @override
   void initState() {
     super.initState();
     _controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setUserAgent('Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36')
+      ..setUserAgent(_userAgent)
       ..setNavigationDelegate(NavigationDelegate(
         onNavigationRequest: (request) => NavigationDecision.navigate,
         onPageFinished: (url) {
@@ -69,13 +81,26 @@ class _LoginPageState extends State<LoginPage> {
     _pollTimer = Timer.periodic(const Duration(seconds: 4), (_) async {
       if (_loggedIn) return;
       try {
-        // Use native cookie channel to check if session cookie is set (works on both iOS & Android)
+        // Use native cookie channel to check if session cookie is set
         const channel = MethodChannel('com.smarteye/cookies');
         final cookieStr = await channel.invokeMethod('getCookies', {
           'url': widget.baseUrl,
         }) as String? ?? '';
         if (cookieStr.isNotEmpty) {
-          // Session cookie found! WeChat confirmed. Proceed with login.
+          _stopPolling();
+          _onLoginSuccess();
+        }
+      } catch (_) {}
+    });
+
+    // Backup: URL-based polling — catches the redirect to /Product/Manage
+    // even when WKWebView hasn't persisted cookies yet (iOS ITP / delayed write).
+    _urlPollTimer?.cancel();
+    _urlPollTimer = Timer.periodic(const Duration(seconds: 3), (_) async {
+      if (_loggedIn) return;
+      try {
+        final currentUrl = await _controller.currentUrl();
+        if (currentUrl != null && currentUrl.contains('/Product/Manage')) {
           _stopPolling();
           _onLoginSuccess();
         }
@@ -86,6 +111,8 @@ class _LoginPageState extends State<LoginPage> {
   void _stopPolling() {
     _pollTimer?.cancel();
     _pollTimer = null;
+    _urlPollTimer?.cancel();
+    _urlPollTimer = null;
   }
 
   @override
