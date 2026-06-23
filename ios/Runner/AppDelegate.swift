@@ -1,18 +1,15 @@
 import Flutter
 import UIKit
 import WebKit
-import SafariServices
 
 @main
-@objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate, SFSafariViewControllerDelegate {
+@objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
   private var webViewUserScriptInstalled = false
-  private var safariLoginResult: FlutterResult?
 
   override func application(
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
-    // Cookie channel — iOS equivalent of Android CookieManager
     if let controller = window?.rootViewController as? FlutterViewController {
       let channel = FlutterMethodChannel(name: "com.smarteye/cookies", binaryMessenger: controller.binaryMessenger)
       channel.setMethodCallHandler { (call, result) in
@@ -24,16 +21,6 @@ import SafariServices
           }
           self.installWindowOpenOverrideIfNeeded()
           self.getCookies(for: url, result: result)
-        } else if call.method == "openSafariLogin" {
-          // Open login flow in SFSafariViewController (full Safari engine).
-          // This handles WeChat OAuth redirect chains and cookie persistence
-          // correctly, unlike embedded WKWebView.
-          guard let args = call.arguments as? [String: Any],
-                let url = args["url"] as? String else {
-            result(FlutterError(code: "NO_URL", message: "Missing url", details: nil))
-            return
-          }
-          self.openSafariLogin(url: url, result: result)
         } else {
           result(FlutterMethodNotImplemented)
         }
@@ -41,66 +28,6 @@ import SafariServices
     }
 
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
-  }
-
-  // MARK: - Safari Login
-
-  private func openSafariLogin(url: String, result: @escaping FlutterResult) {
-    guard let loginURL = URL(string: url) else {
-      result(FlutterError(code: "BAD_URL", message: "Invalid URL: \(url)", details: nil))
-      return
-    }
-    safariLoginResult = result
-
-    // MUST be on main thread — MethodChannel callbacks can arrive on bg thread
-    DispatchQueue.main.async { [weak self] in
-      guard let self = self else { return }
-      let safariVC = SFSafariViewController(url: loginURL)
-      safariVC.delegate = self
-      safariVC.modalPresentationStyle = .pageSheet
-
-      // Find topmost VC via UIApplication (more reliable than `window` in Flutter)
-      guard let rootVC = self.topMostViewController() else {
-        result(FlutterError(code: "NO_VC", message: "No view controller found", details: nil))
-        self.safariLoginResult = nil
-        return
-      }
-      rootVC.present(safariVC, animated: true) {
-        NSLog("[SmartEye] SFSafariViewController presented")
-      }
-    }
-  }
-
-  private func topMostViewController() -> UIViewController? {
-    guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-          let window = scene.windows.first(where: { $0.isKeyWindow }),
-          let rootVC = window.rootViewController else {
-      // Fallback: use the AppDelegate window
-      if let rootVC = self.window?.rootViewController {
-        var top = rootVC
-        while let presented = top.presentedViewController {
-          top = presented
-        }
-        return top
-      }
-      return nil
-    }
-    var top = rootVC
-    while let presented = top.presentedViewController {
-      top = presented
-    }
-    return top
-  }
-
-  // SFSafariViewControllerDelegate — called when user dismisses Safari
-  func safariViewControllerDidFinish(_ controller: SFSafariViewController) {
-    let store = WKWebsiteDataStore.default()
-    store.httpCookieStore.getAllCookies { [weak self] cookies in
-      let cookieStr = cookies.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
-      self?.safariLoginResult?(cookieStr)
-      self?.safariLoginResult = nil
-    }
-    controller.dismiss(animated: true)
   }
 
   /// Walk the view hierarchy to find WKWebView instances and inject a

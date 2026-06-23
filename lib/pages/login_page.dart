@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart' show MissingPluginException, MethodChannel, SystemChannels;
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import '../utils/constants.dart';
@@ -474,56 +474,6 @@ class _LoginPageState extends State<LoginPage> with WidgetsBindingObserver {
     ''');
   }
 
-  /// Open the login flow in SFSafariViewController (full Safari engine).
-  /// This completely bypasses WKWebView's broken redirect/cookie handling.
-  Future<void> _openSafariLogin() async {
-    // Prevent double-tap
-    if (_reloading) return;
-    _reloading = true;
-    setState(() {});
-
-    try {
-      const channel = MethodChannel('com.smarteye/cookies');
-      final cookieStr = await channel.invokeMethod('openSafariLogin', {
-        'url': '${widget.baseUrl}/account/signin?ReturnUrl=%2fProduct%2fManage',
-      }).timeout(const Duration(minutes: 3)); // Safari login can take time
-
-      if (!mounted) return;
-      if (cookieStr is String && cookieStr.isNotEmpty) {
-        final prefs = await SharedPreferences.getInstance();
-        final storeKey = '${widget.baseUrl}|${widget.account}|${widget.cashierJobNumber}';
-        await prefs.setString('cookie_$storeKey', cookieStr);
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('登录成功！'), backgroundColor: AppConstants.successColor),
-          );
-          Navigator.of(context).pop(true);
-        }
-      } else {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('未检测到登录会话，请在 Safari 中完成扫码验证后再点完成'), backgroundColor: Colors.orange),
-          );
-        }
-      }
-    } on MissingPluginException {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Safari 登录需要重新编译 App（原生代码已更新）'), backgroundColor: Colors.red),
-        );
-      }
-    } catch (e) {
-      debugPrint('❌ Safari login error: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('打开 Safari 失败: $e'), backgroundColor: Colors.red),
-        );
-      }
-    }
-    _reloading = false;
-    setState(() {});
-  }
-
   Future<void> _onLoginSuccess() async {
     if (_loggedIn) return;
     _loggedIn = true;
@@ -642,37 +592,6 @@ class _LoginPageState extends State<LoginPage> with WidgetsBindingObserver {
 
           // WebView
           Expanded(child: WebViewWidget(controller: _controller)),
-
-          // Safari login button — uses SFSafariViewController (full Safari
-          // engine) instead of embedded WKWebView.  Solves the WeChat OAuth
-          // redirect chain / cookie persistence issue on iOS.
-          if (_qrReady && !_loggedIn)
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                boxShadow: [
-                  BoxShadow(color: Colors.black.withValues(alpha: 0.1), blurRadius: 4, offset: const Offset(0, -2)),
-                ],
-              ),
-              child: SafeArea(
-                top: false,
-                child: ElevatedButton.icon(
-                  icon: _reloading
-                      ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                      : const Icon(Icons.open_in_browser, size: 20),
-                  label: Text(_reloading ? '请在 Safari 中完成登录…' : '在 Safari 浏览器中登录', style: const TextStyle(fontSize: 15)),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppConstants.primaryColor,
-                    foregroundColor: Colors.white,
-                    minimumSize: const Size(double.infinity, 48),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppConstants.radiusSm)),
-                  ),
-                  onPressed: _reloading ? null : _openSafariLogin,
-                ),
-              ),
-            ),
         ],
       ),
     );
