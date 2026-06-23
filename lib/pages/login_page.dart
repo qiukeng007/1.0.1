@@ -66,9 +66,24 @@ class _LoginPageState extends State<LoginPage> {
 
   void _startPolling() {
     _pollTimer?.cancel();
-    _pollTimer = Timer.periodic(const Duration(seconds: 4), (_) {
-      if (!_qrReady || _loggedIn) return;
-      _controller.reload();
+    _pollTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+      if (_loggedIn) return;
+      // Check if logged in by trying to access /Product/Manage via fetch
+      _controller.runJavaScript('''
+        (function() {
+          if (window._loginChecked) return;
+          window._loginChecked = true;
+          fetch('/Product/Manage', { redirect: 'manual' }).then(function(r) {
+            window._loginChecked = false;
+            // If not redirected to signin, we're logged in
+            if (!r.redirected && r.status === 200) {
+              window.location.href = '/Product/Manage';
+            } else if (r.redirected && r.url.indexOf('signin') === -1) {
+              window.location.href = '/Product/Manage';
+            }
+          }).catch(function() { window._loginChecked = false; });
+        })();
+      ''');
     });
   }
 
