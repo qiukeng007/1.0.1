@@ -81,7 +81,6 @@ class _LoginPageState extends State<LoginPage> {
     _stopPolling();
     super.dispose();
   }
-  }
 
   Future<void> _injectAutoFill() async {
     if (_loggedIn) return;
