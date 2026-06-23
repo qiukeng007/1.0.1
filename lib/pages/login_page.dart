@@ -46,10 +46,12 @@ class _LoginPageState extends State<LoginPage> {
             _onLoginSuccess();
           } else if (url.contains('signin') || url.contains('login') || url.contains('account')) {
             _injectAutoFill();
-            // Start polling immediately after page loads (iOS WKWebView JS channels unreliable)
+            // Delay polling start — let QR code render first (auto-fill takes ~1.5s)
             if (!_qrReady) {
               _qrReady = true;
-              _startPolling();
+              Future.delayed(const Duration(seconds: 10), () {
+                if (mounted && !_loggedIn) _startPolling();
+              });
             }
           }
         },
