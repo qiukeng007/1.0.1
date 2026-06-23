@@ -62,25 +62,22 @@ class _LoginPageState extends State<LoginPage> with WidgetsBindingObserver {
           final url = request.url;
           debugPrint('🔀 WebView nav: $url');
 
-          // KEY INSIGHT: UserLoginByWx is the WeChat OAuth callback URL.
-          // Its presence means WeChat scan was confirmed and pospal received
-          // the auth code. The subsequent redirect chain (UserLoginByWx →
-          // Signin?LoginByWx=true → HOme/Product/Manage) can break on WKWebView
-          // (empty msg=, double consumption of auth code, cookie drop).
-          //
-          // Fix: when we see UserLoginByWx, remember it. When the next page
-          // finishes loading, if it's stuck on Signin?LoginByWx=true (not the
-          // target page), force-navigate to /Product/Manage.
+          // Detect WeChat OAuth callback — the definitive signal that
+          // the QR code was scanned and WeChat confirmed.
           if (url.contains('UserLoginByWx')) {
             _wechatCallbackSeen = true;
-            debugPrint('✅ WeChat OAuth callback detected — scan confirmed!');
+            debugPrint('✅ WeChat callback detected — killing JS timers to '
+                'prevent double consumption of auth code');
+            // Immediately kill all page JS timers to prevent the polling
+            // from making a second UserLoginByWx call (which consumes
+            // the one-time auth code and breaks the login).
+            _controller.runJavaScript(
+              'for(var i=1;i<99999;i++){clearInterval(i);clearTimeout(i);}'
+            );
           }
 
-          // If we're navigating to Signin?LoginByWx=true but we already saw
-          // the WeChat callback, this is likely a failed re-processing attempt.
-          // Allow it but flag for intervention.
           if (url.contains('LoginByWx=true')) {
-            debugPrint('⚠️ LoginByWx redirect — msg param may be empty (iOS bug)');
+            debugPrint('⚠️ LoginByWx redirect — will force-navigate on finish');
           }
 
           return NavigationDecision.navigate;
@@ -89,21 +86,24 @@ class _LoginPageState extends State<LoginPage> with WidgetsBindingObserver {
           setState(() => _loading = false);
           debugPrint('📄 Page finished: $url');
 
+          // Success: landed on target page
           if (url.contains('/Product/Manage') || url.contains('/Home')) {
             _stopPolling();
             _onLoginSuccess();
             return;
           }
 
-          // WeChat callback seen, but page landed on Signin instead of target.
-          // The intermediate redirect failed — force-navigate to target.
-          if (_wechatCallbackSeen && url.contains('LoginByWx=true')) {
-            debugPrint('🔄 WeChat callback seen but stuck at LoginByWx — '
-                'forcing navigation to /Product/Manage');
+          // Stuck on Signin?LoginByWx=true — the intermediate redirect failed.
+          // Don't wait, don't check _wechatCallbackSeen — just force through.
+          if (url.contains('LoginByWx=true')) {
+            debugPrint('🔄 Stuck at LoginByWx — forcing navigation to /Product/Manage');
             _stopPolling();
-            _controller.loadRequest(
-              Uri.parse('${widget.baseUrl}/Product/Manage'),
-            );
+            // Small delay to let cookies settle, then go
+            Future.delayed(const Duration(milliseconds: 500), () {
+              _controller.loadRequest(
+                Uri.parse('${widget.baseUrl}/Product/Manage'),
+              );
+            });
             return;
           }
 
@@ -146,8 +146,8 @@ class _LoginPageState extends State<LoginPage> with WidgetsBindingObserver {
         _wechatCallbackSeen = true;
         debugPrint('✅ JS detected WeChat callback');
       }
-      // Stuck on LoginByWx after callback — force navigate
-      if (_wechatCallbackSeen && url.contains('LoginByWx=true')) {
+      // Stuck on LoginByWx — force navigate (no condition)
+      if (url.contains('LoginByWx=true')) {
         debugPrint('🔄 JS: stuck at LoginByWx, forcing /Product/Manage');
         _stopPolling();
         _controller.loadRequest(Uri.parse('${widget.baseUrl}/Product/Manage'));
@@ -216,27 +216,13 @@ class _LoginPageState extends State<LoginPage> with WidgetsBindingObserver {
     }
   }
 
-  /// Recovery: tries multiple strategies to detect a completed login.
-  /// 1. Check if session cookie already exists (native check)
-  /// 2. Navigate directly to /Product/Manage (if server already authenticated)
-  /// 3. Reload the signin page (server may redirect to Product/Manage)
+  /// Recovery: navigate directly to /Product/Manage.
+  /// If the server already authenticated the session (via WeChat callback),
+  /// this will load the target page. Otherwise it will redirect back to signin.
   Future<void> _reloadPage() async {
     if (_reloading || _loggedIn) return;
     _reloading = true;
     try {
-      // Strategy 1: Check cookies
-      const channel = MethodChannel('com.smarteye/cookies');
-      final cookieStr = await channel.invokeMethod('getCookies', {
-        'url': widget.baseUrl,
-      }) as String? ?? '';
-      if (cookieStr.isNotEmpty) {
-        _onLoginSuccess();
-        _reloading = false;
-        return;
-      }
-
-      // Strategy 2: Navigate directly to target page.
-      // If the server-side QR session was confirmed, this should work.
       final currentUrl = await _controller.currentUrl();
       if (currentUrl != null && currentUrl.contains('/Product/Manage')) {
         _onLoginSuccess();
@@ -245,21 +231,6 @@ class _LoginPageState extends State<LoginPage> with WidgetsBindingObserver {
       }
       debugPrint('🔄 Recovery: navigating directly to /Product/Manage');
       await _controller.loadRequest(Uri.parse('${widget.baseUrl}/Product/Manage'));
-
-      // Wait 3 seconds for the page to load, then check
-      await Future.delayed(const Duration(seconds: 3));
-      final newUrl = await _controller.currentUrl();
-      if (newUrl != null && newUrl.contains('/Product/Manage')) {
-        _onLoginSuccess();
-        _reloading = false;
-        return;
-      }
-
-      // Strategy 3: Reload the signin page
-      debugPrint('🔄 Recovery: reloading signin page');
-      await _controller.loadRequest(Uri.parse(
-        '${widget.baseUrl}/account/signin?ReturnUrl=%2fProduct%2fManage',
-      ));
     } catch (_) {
       try {
         await _controller.loadRequest(Uri.parse(
