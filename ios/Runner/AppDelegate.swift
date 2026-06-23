@@ -1,10 +1,12 @@
 import Flutter
 import UIKit
 import WebKit
+import SafariServices
 
 @main
-@objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
+@objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate, SFSafariViewControllerDelegate {
   private var webViewUserScriptInstalled = false
+  private var safariLoginResult: FlutterResult?
 
   override func application(
     _ application: UIApplication,
@@ -20,9 +22,18 @@ import WebKit
             result("")
             return
           }
-          // Opportunistically install the WKUserScript on first cookie call
           self.installWindowOpenOverrideIfNeeded()
           self.getCookies(for: url, result: result)
+        } else if call.method == "openSafariLogin" {
+          // Open login flow in SFSafariViewController (full Safari engine).
+          // This handles WeChat OAuth redirect chains and cookie persistence
+          // correctly, unlike embedded WKWebView.
+          guard let args = call.arguments as? [String: Any],
+                let url = args["url"] as? String else {
+            result(FlutterError(code: "NO_URL", message: "Missing url", details: nil))
+            return
+          }
+          self.openSafariLogin(url: url, result: result)
         } else {
           result(FlutterMethodNotImplemented)
         }
@@ -30,6 +41,43 @@ import WebKit
     }
 
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
+  }
+
+  // MARK: - Safari Login
+
+  private func openSafariLogin(url: String, result: @escaping FlutterResult) {
+    guard let loginURL = URL(string: url) else {
+      result(FlutterError(code: "BAD_URL", message: "Invalid URL", details: nil))
+      return
+    }
+    safariLoginResult = result
+
+    let safariVC = SFSafariViewController(url: loginURL)
+    safariVC.delegate = self
+    safariVC.modalPresentationStyle = .pageSheet
+
+    // Find the topmost view controller to present from
+    if let rootVC = window?.rootViewController {
+      var topVC = rootVC
+      while let presented = topVC.presentedViewController {
+        topVC = presented
+      }
+      topVC.present(safariVC, animated: true)
+    } else {
+      result(FlutterError(code: "NO_VC", message: "No root view controller", details: nil))
+    }
+  }
+
+  // SFSafariViewControllerDelegate — called when user dismisses Safari
+  func safariViewControllerDidFinish(_ controller: SFSafariViewController) {
+    // Get cookies from the shared data store (Safari shares with WKWebView via default store)
+    let store = WKWebsiteDataStore.default()
+    store.httpCookieStore.getAllCookies { cookies in
+      let cookieStr = cookies.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
+      self.safariLoginResult?(cookieStr)
+      self.safariLoginResult = nil
+    }
+    controller.dismiss(animated: true)
   }
 
   /// Walk the view hierarchy to find WKWebView instances and inject a

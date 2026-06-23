@@ -453,6 +453,42 @@ class _LoginPageState extends State<LoginPage> with WidgetsBindingObserver {
     ''');
   }
 
+  /// Open the login flow in SFSafariViewController (full Safari engine).
+  /// This completely bypasses WKWebView's broken redirect/cookie handling.
+  /// Safari handles WeChat OAuth redirect chains correctly — cookies are
+  /// persisted in the shared WKWebsiteDataStore and usable by the app.
+  Future<void> _openSafariLogin() async {
+    try {
+      const channel = MethodChannel('com.smarteye/cookies');
+      final cookieStr = await channel.invokeMethod('openSafariLogin', {
+        'url': '${widget.baseUrl}/account/signin?ReturnUrl=%2fProduct%2fManage',
+      }) as String? ?? '';
+
+      if (!mounted) return;
+      if (cookieStr.isNotEmpty) {
+        // Safari login succeeded — save cookies and proceed
+        final prefs = await SharedPreferences.getInstance();
+        final storeKey = '${widget.baseUrl}|${widget.account}|${widget.cashierJobNumber}';
+        await prefs.setString('cookie_$storeKey', cookieStr);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Safari 登录成功！'), backgroundColor: AppConstants.successColor),
+          );
+          Navigator.of(context).pop(true);
+        }
+      } else {
+        // User dismissed Safari without completing login
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('未检测到登录会话，请重试'), backgroundColor: Colors.orange),
+          );
+        }
+      }
+    } catch (e) {
+      debugPrint('❌ Safari login error: $e');
+    }
+  }
+
   Future<void> _onLoginSuccess() async {
     if (_loggedIn) return;
     _loggedIn = true;
@@ -571,6 +607,35 @@ class _LoginPageState extends State<LoginPage> with WidgetsBindingObserver {
 
           // WebView
           Expanded(child: WebViewWidget(controller: _controller)),
+
+          // Safari login button — uses SFSafariViewController (full Safari
+          // engine) instead of embedded WKWebView.  Solves the WeChat OAuth
+          // redirect chain / cookie persistence issue on iOS.
+          if (_qrReady && !_loggedIn)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                boxShadow: [
+                  BoxShadow(color: Colors.black.withValues(alpha: 0.1), blurRadius: 4, offset: const Offset(0, -2)),
+                ],
+              ),
+              child: SafeArea(
+                top: false,
+                child: ElevatedButton.icon(
+                  icon: const Icon(Icons.open_in_browser, size: 20),
+                  label: const Text('在 Safari 浏览器中登录', style: TextStyle(fontSize: 15)),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppConstants.primaryColor,
+                    foregroundColor: Colors.white,
+                    minimumSize: const Size(double.infinity, 48),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppConstants.radiusSm)),
+                  ),
+                  onPressed: _openSafariLogin,
+                ),
+              ),
+            ),
         ],
       ),
     );
