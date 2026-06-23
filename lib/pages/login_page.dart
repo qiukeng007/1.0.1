@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import 'package:flutter/services.dart' show MissingPluginException, MethodChannel, SystemChannels;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import '../utils/constants.dart';
@@ -62,15 +62,19 @@ class _LoginPageState extends State<LoginPage> with WidgetsBindingObserver {
           final url = request.url;
           debugPrint('🔀 WebView nav: $url');
 
-          // Detect WeChat OAuth callback — the definitive signal that
-          // the QR code was scanned and WeChat confirmed.
+          // CRITICAL: UserLoginByWx is a one-time-use OAuth callback.
+          // The page's polling JS often fires it TWICE — the second call
+          // consumes the already-used auth code, returns an error, and
+          // OVERWRITES the successful first redirect with an empty msg=
+          // error page.  Block the duplicate.
           if (url.contains('UserLoginByWx')) {
+            if (_wechatCallbackSeen) {
+              debugPrint('🛑 BLOCKED duplicate UserLoginByWx — '
+                  'preventing auth code double-consumption');
+              return NavigationDecision.prevent;
+            }
             _wechatCallbackSeen = true;
-            debugPrint('✅ WeChat callback detected — killing JS timers to '
-                'prevent double consumption of auth code');
-            // Immediately kill all page JS timers to prevent the polling
-            // from making a second UserLoginByWx call (which consumes
-            // the one-time auth code and breaks the login).
+            debugPrint('✅ First UserLoginByWx — allowing, killing JS timers');
             _controller.runJavaScript(
               'for(var i=1;i<99999;i++){clearInterval(i);clearTimeout(i);}'
             );
@@ -98,11 +102,28 @@ class _LoginPageState extends State<LoginPage> with WidgetsBindingObserver {
           if (url.contains('LoginByWx=true')) {
             debugPrint('🔄 Stuck at LoginByWx — forcing navigation to /Product/Manage');
             _stopPolling();
-            // Small delay to let cookies settle, then go
             Future.delayed(const Duration(milliseconds: 500), () {
-              _controller.loadRequest(
-                Uri.parse('${widget.baseUrl}/Product/Manage'),
-              );
+              if (mounted && !_loggedIn) {
+                _controller.loadRequest(
+                  Uri.parse('${widget.baseUrl}/Product/Manage'),
+                );
+              }
+            });
+            return;
+          }
+
+          // WeChat callback was processed but we're back on a signin page.
+          // The session cookie may have been set — try navigating to target.
+          if (_wechatCallbackSeen &&
+              (url.contains('signin') || url.contains('login') || url.contains('account'))) {
+            debugPrint('🔄 WeChat callback seen but on signin page — trying /Product/Manage');
+            _stopPolling();
+            Future.delayed(const Duration(seconds: 1), () {
+              if (mounted && !_loggedIn) {
+                _controller.loadRequest(
+                  Uri.parse('${widget.baseUrl}/Product/Manage'),
+                );
+              }
             });
             return;
           }
@@ -455,38 +476,52 @@ class _LoginPageState extends State<LoginPage> with WidgetsBindingObserver {
 
   /// Open the login flow in SFSafariViewController (full Safari engine).
   /// This completely bypasses WKWebView's broken redirect/cookie handling.
-  /// Safari handles WeChat OAuth redirect chains correctly — cookies are
-  /// persisted in the shared WKWebsiteDataStore and usable by the app.
   Future<void> _openSafariLogin() async {
+    // Prevent double-tap
+    if (_reloading) return;
+    _reloading = true;
+    setState(() {});
+
     try {
       const channel = MethodChannel('com.smarteye/cookies');
       final cookieStr = await channel.invokeMethod('openSafariLogin', {
         'url': '${widget.baseUrl}/account/signin?ReturnUrl=%2fProduct%2fManage',
-      }) as String? ?? '';
+      }).timeout(const Duration(minutes: 3)); // Safari login can take time
 
       if (!mounted) return;
-      if (cookieStr.isNotEmpty) {
-        // Safari login succeeded — save cookies and proceed
+      if (cookieStr is String && cookieStr.isNotEmpty) {
         final prefs = await SharedPreferences.getInstance();
         final storeKey = '${widget.baseUrl}|${widget.account}|${widget.cashierJobNumber}';
         await prefs.setString('cookie_$storeKey', cookieStr);
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Safari 登录成功！'), backgroundColor: AppConstants.successColor),
+            const SnackBar(content: Text('登录成功！'), backgroundColor: AppConstants.successColor),
           );
           Navigator.of(context).pop(true);
         }
       } else {
-        // User dismissed Safari without completing login
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('未检测到登录会话，请重试'), backgroundColor: Colors.orange),
+            const SnackBar(content: Text('未检测到登录会话，请在 Safari 中完成扫码验证后再点完成'), backgroundColor: Colors.orange),
           );
         }
       }
+    } on MissingPluginException {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Safari 登录需要重新编译 App（原生代码已更新）'), backgroundColor: Colors.red),
+        );
+      }
     } catch (e) {
       debugPrint('❌ Safari login error: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('打开 Safari 失败: $e'), backgroundColor: Colors.red),
+        );
+      }
     }
+    _reloading = false;
+    setState(() {});
   }
 
   Future<void> _onLoginSuccess() async {
@@ -624,15 +659,17 @@ class _LoginPageState extends State<LoginPage> with WidgetsBindingObserver {
               child: SafeArea(
                 top: false,
                 child: ElevatedButton.icon(
-                  icon: const Icon(Icons.open_in_browser, size: 20),
-                  label: const Text('在 Safari 浏览器中登录', style: TextStyle(fontSize: 15)),
+                  icon: _reloading
+                      ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                      : const Icon(Icons.open_in_browser, size: 20),
+                  label: Text(_reloading ? '请在 Safari 中完成登录…' : '在 Safari 浏览器中登录', style: const TextStyle(fontSize: 15)),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: AppConstants.primaryColor,
                     foregroundColor: Colors.white,
                     minimumSize: const Size(double.infinity, 48),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppConstants.radiusSm)),
                   ),
-                  onPressed: _openSafariLogin,
+                  onPressed: _reloading ? null : _openSafariLogin,
                 ),
               ),
             ),

@@ -47,35 +47,58 @@ import SafariServices
 
   private func openSafariLogin(url: String, result: @escaping FlutterResult) {
     guard let loginURL = URL(string: url) else {
-      result(FlutterError(code: "BAD_URL", message: "Invalid URL", details: nil))
+      result(FlutterError(code: "BAD_URL", message: "Invalid URL: \(url)", details: nil))
       return
     }
     safariLoginResult = result
 
-    let safariVC = SFSafariViewController(url: loginURL)
-    safariVC.delegate = self
-    safariVC.modalPresentationStyle = .pageSheet
+    // MUST be on main thread — MethodChannel callbacks can arrive on bg thread
+    DispatchQueue.main.async { [weak self] in
+      guard let self = self else { return }
+      let safariVC = SFSafariViewController(url: loginURL)
+      safariVC.delegate = self
+      safariVC.modalPresentationStyle = .pageSheet
 
-    // Find the topmost view controller to present from
-    if let rootVC = window?.rootViewController {
-      var topVC = rootVC
-      while let presented = topVC.presentedViewController {
-        topVC = presented
+      // Find topmost VC via UIApplication (more reliable than `window` in Flutter)
+      guard let rootVC = self.topMostViewController() else {
+        result(FlutterError(code: "NO_VC", message: "No view controller found", details: nil))
+        self.safariLoginResult = nil
+        return
       }
-      topVC.present(safariVC, animated: true)
-    } else {
-      result(FlutterError(code: "NO_VC", message: "No root view controller", details: nil))
+      rootVC.present(safariVC, animated: true) {
+        NSLog("[SmartEye] SFSafariViewController presented")
+      }
     }
+  }
+
+  private func topMostViewController() -> UIViewController? {
+    guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+          let window = scene.windows.first(where: { $0.isKeyWindow }),
+          let rootVC = window.rootViewController else {
+      // Fallback: use the AppDelegate window
+      if let rootVC = self.window?.rootViewController {
+        var top = rootVC
+        while let presented = top.presentedViewController {
+          top = presented
+        }
+        return top
+      }
+      return nil
+    }
+    var top = rootVC
+    while let presented = top.presentedViewController {
+      top = presented
+    }
+    return top
   }
 
   // SFSafariViewControllerDelegate — called when user dismisses Safari
   func safariViewControllerDidFinish(_ controller: SFSafariViewController) {
-    // Get cookies from the shared data store (Safari shares with WKWebView via default store)
     let store = WKWebsiteDataStore.default()
-    store.httpCookieStore.getAllCookies { cookies in
+    store.httpCookieStore.getAllCookies { [weak self] cookies in
       let cookieStr = cookies.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
-      self.safariLoginResult?(cookieStr)
-      self.safariLoginResult = nil
+      self?.safariLoginResult?(cookieStr)
+      self?.safariLoginResult = nil
     }
     controller.dismiss(animated: true)
   }
