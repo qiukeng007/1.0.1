@@ -62,11 +62,12 @@ jobs:
           end
           EOF
 
-      - name: 🚑 强制重置 AppDelegate (消除类型匹配报错)
+      - name: 🚑 强制重置 AppDelegate (含 Cookie 通道)
         run: |
-          cat << 'EOF' > ios/Runner/AppDelegate.swift
+          cat << 'SWIFTEOF' > ios/Runner/AppDelegate.swift
           import UIKit
           import Flutter
+          import WebKit
 
           @main
           @objc class AppDelegate: FlutterAppDelegate {
@@ -74,11 +75,45 @@ jobs:
               _ application: UIApplication,
               didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
             ) -> Bool {
+              // Cookie channel — iOS equivalent of Android CookieManager
+              if let controller = window?.rootViewController as? FlutterViewController {
+                let channel = FlutterMethodChannel(name: "com.smarteye/cookies", binaryMessenger: controller.binaryMessenger)
+                channel.setMethodCallHandler { (call, result) in
+                  if call.method == "getCookies" {
+                    guard let args = call.arguments as? [String: Any],
+                          let url = args["url"] as? String else {
+                      result("")
+                      return
+                    }
+                    self.getCookies(for: url, result: result)
+                  } else {
+                    result(FlutterMethodNotImplemented)
+                  }
+                }
+              }
               GeneratedPluginRegistrant.register(with: self)
               return super.application(application, didFinishLaunchingWithOptions: launchOptions)
             }
+
+            private func getCookies(for url: String, result: @escaping FlutterResult) {
+              guard let siteURL = URL(string: url) else {
+                result("")
+                return
+              }
+              WKWebsiteDataStore.default().httpCookieStore.getAllCookies { cookies in
+                var allCookies: [HTTPCookie] = []
+                for cookie in cookies {
+                  if let host = siteURL.host, host.contains(cookie.domain.replacingOccurrences(of: ".", with: "")) || cookie.domain.contains(host) {
+                    allCookies.append(cookie)
+                  }
+                }
+                if allCookies.isEmpty { allCookies = cookies }
+                let cookieStr = allCookies.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
+                result(cookieStr)
+              }
+            }
           }
-          EOF
+          SWIFTEOF
 
       - name: 🛠️ 修复 DefaultCamera 源码补丁
         run: |
