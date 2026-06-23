@@ -66,22 +66,20 @@ class _LoginPageState extends State<LoginPage> {
 
   void _startPolling() {
     _pollTimer?.cancel();
-    _pollTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+    _pollTimer = Timer.periodic(const Duration(seconds: 4), (_) async {
       if (_loggedIn) return;
-      // Check login by requesting /Product/Manage with follow redirects.
-      // If logged in → ends at /Product/Manage. If not → ends at /account/signin.
-      _controller.runJavaScript('''
-        (function() {
-          if (window._loginCheckBusy) return;
-          window._loginCheckBusy = true;
-          fetch('/Product/Manage').then(function(r) {
-            window._loginCheckBusy = false;
-            if (r.url && r.url.indexOf('/Product/Manage') !== -1 && r.url.indexOf('signin') === -1) {
-              window.location.href = '/Product/Manage';
-            }
-          }).catch(function() { window._loginCheckBusy = false; });
-        })();
-      ''');
+      try {
+        // Use native cookie channel to check if session cookie is set (works on both iOS & Android)
+        const channel = MethodChannel('com.smarteye/cookies');
+        final cookieStr = await channel.invokeMethod('getCookies', {
+          'url': widget.baseUrl,
+        }) as String? ?? '';
+        if (cookieStr.isNotEmpty) {
+          // Session cookie found! WeChat confirmed. Proceed with login.
+          _stopPolling();
+          _onLoginSuccess();
+        }
+      } catch (_) {}
     });
   }
 
