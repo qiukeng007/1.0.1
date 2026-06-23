@@ -991,6 +991,7 @@ class QueryService {
       case 'loss': return '商品报损';
       case 'unpack': return '组装拆分';
       case 'anticheckout': return '反结账';
+      case 'newproduct': return '初始库存';
       default: return code;
     }
   }

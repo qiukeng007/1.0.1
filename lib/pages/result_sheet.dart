@@ -111,6 +111,8 @@ class _ResultSheetState extends State<ResultSheet> with TickerProviderStateMixin
   final _newQtyController = TextEditingController();
   final List<TextEditingController> _extBarcodeCtrls = [];
   bool _extBarcodeExpanded = false;
+  bool _hasPrinter = false;
+  List<PrinterConfig> _printers = [];
   Set<String> _originalExtBarcodes = const <String>{}; // snapshot at load time for change detection
 
   /// Whether ext barcodes have been modified relative to the loaded snapshot
@@ -370,6 +372,7 @@ class _ResultSheetState extends State<ResultSheet> with TickerProviderStateMixin
       duration: const Duration(milliseconds: 800),
     );
     _initVoiceModel();
+    _checkPrinter();
 
     _simulateAnalysis();
   }
@@ -727,7 +730,7 @@ class _ResultSheetState extends State<ResultSheet> with TickerProviderStateMixin
               Positioned(top: 0, left: 0, right: 0, child: _buildVoiceResultBar()),
             // Voice FAB
             if (!_analyzing && !_submitted)
-              Positioned(right: 16, bottom: 80, child: _buildVoiceFab()),
+              Positioned(right: 16, bottom: 140, child: _buildVoiceFab()),
           ],
         ),
     ),
@@ -817,14 +820,11 @@ class _ResultSheetState extends State<ResultSheet> with TickerProviderStateMixin
           label: const Text('修改信息 / 补货', style: TextStyle(fontSize: 16)),
           style: ElevatedButton.styleFrom(backgroundColor: AppConstants.primaryColor, foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(vertical: 14)),
         )),
-        const SizedBox(height: 10),
-        // Print button
-        SizedBox(width: double.infinity, child: OutlinedButton.icon(
-          onPressed: _showPrintDialog,
-          icon: const Icon(Icons.print, size: 18),
-          label: const Text('打印价签', style: TextStyle(fontSize: 14)),
-          style: OutlinedButton.styleFrom(foregroundColor: AppConstants.primaryColor, side: const BorderSide(color: AppConstants.primaryColor), padding: const EdgeInsets.symmetric(vertical: 12)),
-        )),
+        if (_hasPrinter) ...[
+          const SizedBox(height: 10),
+          // Multiple print buttons — one per configured printer (matching pospal_stock_app)
+          _buildPrintButtons(),
+        ],
       ]),
     );
   }
@@ -1650,6 +1650,14 @@ class _ResultSheetState extends State<ResultSheet> with TickerProviderStateMixin
     _modelDir = await ModelService.getModelPath();
   }
 
+  Future<void> _checkPrinter() async {
+    final configs = await PrinterConfigService().loadConfigs();
+    if (mounted) setState(() {
+      _printers = configs;
+      _hasPrinter = configs.any((c) => c.ip.isNotEmpty);
+    });
+  }
+
   Future<void> _startVoiceInput() async {
     if (_isListening || _voiceProcessing) return;
 
@@ -2296,7 +2304,7 @@ class _ResultSheetState extends State<ResultSheet> with TickerProviderStateMixin
       final unit = _selectedUnit.isNotEmpty ? _selectedUnit : null;
       final supplier = _selectedNewSupplier.isNotEmpty ? _selectedNewSupplier : null;
       if (mounted) {
-        _showInline('⏳ 正在保存到 $widget.targetStore…', duration: const Duration(seconds: 10));
+        _showInline('⏳ 正在保存到 ${widget.targetStore}…', duration: const Duration(seconds: 10));
       }
 
       // Save to primary store (use fresh QueryService per store to avoid connection issues)
@@ -2366,8 +2374,12 @@ class _ResultSheetState extends State<ResultSheet> with TickerProviderStateMixin
         _showInline('✅ 同步完成: $synced 成功, $syncFailed 失败', isError: syncFailed > 0, duration: const Duration(seconds: 3));
         setState(() { _submitting = false; _submitted = true; });
         _saveLastCategory();
+        final stockChanges = _oldRestock.entries
+            .where((e) => e.value != 0)
+            .map((e) => '${e.key}${e.value > 0 ? "+" : ""}${e.value}')
+            .join(' ');
         OperationLogService.add(store: widget.targetStore, action: '编辑库存', barcode: barcode,
-          detail: '同步${synced}店${syncFailed > 0 ? "(${syncFailed}失败)" : ""}');
+          detail: '${_nameController.text.trim()} ${stockChanges.isNotEmpty ? stockChanges : ""}');
       }
     } catch (e) {
       if (mounted) _showMsg('保存异常: $e', err: true);
@@ -2451,7 +2463,8 @@ class _ResultSheetState extends State<ResultSheet> with TickerProviderStateMixin
       qs.dispose();
 
       _saveLastCategory();
-      OperationLogService.add(store: widget.targetStore, action: '新建商品', barcode: _barcodeController.text.trim());
+      OperationLogService.add(store: widget.targetStore, action: '新建商品', barcode: _barcodeController.text.trim(),
+        detail: '${_nameController.text.trim()} 总量${_newQtyController.text}');
       if (mounted) setState(() { _submitting = false; _showDistribution = true;
         _distribution['总店'] = 0; _distribution['C1'] = 0; _distribution['C2'] = 0; _distribution['C3'] = 0;
         _distribution[widget.targetStore] = totalStock; });
@@ -2685,7 +2698,7 @@ class _ResultSheetState extends State<ResultSheet> with TickerProviderStateMixin
       }
       _saveLastCategory();
       OperationLogService.add(store: widget.targetStore, action: '分配库存', barcode: _barcodeController.text.trim(),
-        detail: _distribution.entries.where((e) => e.value > 0).map((e) => '${e.key}+${e.value}').join(' '));
+        detail: '${_nameController.text.trim()} ${_distribution.entries.where((e) => e.value > 0).map((e) => '${e.key}+${e.value}').join(' ')}');
       if (mounted) setState(() => _submitted = true);
     } catch (e) {
       if (mounted) _showMsg('分配库存失败: $e', err: true);
@@ -2726,13 +2739,10 @@ class _ResultSheetState extends State<ResultSheet> with TickerProviderStateMixin
             )),
         ])),
       ),
-      const SizedBox(height: 16),
-      SizedBox(width: double.infinity, child: OutlinedButton.icon(
-        onPressed: () => _showPrintDialog(),
-        icon: const Icon(Icons.print, size: 16),
-        label: const Text('打印价签', style: TextStyle(fontSize: 14)),
-        style: OutlinedButton.styleFrom(foregroundColor: AppConstants.primaryColor, side: const BorderSide(color: AppConstants.primaryColor), padding: const EdgeInsets.symmetric(vertical: 14)),
-      )),
+      if (_hasPrinter) ...[
+        const SizedBox(height: 10),
+        _buildPrintButtons(),
+      ],
       const SizedBox(height: 10),
       SizedBox(width: double.infinity, child: ElevatedButton(
         onPressed: () { widget.onSubmitComplete?.call(); Navigator.of(context).pop(); },
@@ -2754,107 +2764,169 @@ class _ResultSheetState extends State<ResultSheet> with TickerProviderStateMixin
     );
   }
 
-  void _showPrintDialog() async {
-    // Load printers with configured IPs
-    final configService = PrinterConfigService();
-    final allConfigs = await configService.loadConfigs();
-    final printers = allConfigs.where((c) => c.ip.isNotEmpty).toList();
+  // ── Print buttons (matching pospal_stock_app layout) ──
 
-    if (!mounted) return;
-
-    if (printers.isEmpty) {
-      _showInline('请先在设置中配置打印机IP', isWarning: true);
-      return;
-    }
-
-    final qtyCtrl = TextEditingController(text: '1');
-    PrinterConfig? selected = printers.first;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      qtyCtrl.selection = TextSelection(baseOffset: 0, extentOffset: qtyCtrl.text.length);
-    });
-
-    showDialog(context: context, builder: (ctx) {
-      return StatefulBuilder(builder: (ctx, setDialogState) {
-        void doPrint() {
-          final qty = int.tryParse(qtyCtrl.text) ?? 1;
-          if (selected == null) return;
-          Navigator.pop(ctx);
-          _doPrint(selected!, qty > 0 ? qty : 1);
-        }
-
-        return AlertDialog(
-          title: const Text('打印价签', style: TextStyle(fontSize: 16)),
-          content: Column(mainAxisSize: MainAxisSize.min, children: [
-            // Printer selector
-            if (printers.length > 1) ...[
-              const Text('选择打印机:', style: TextStyle(fontSize: 12, color: AppConstants.textSecondary)),
-              const SizedBox(height: 4),
-              ...printers.map((p) => RadioListTile<PrinterConfig>(
-                title: Text('${p.name} (${p.ip})', style: const TextStyle(fontSize: 13)),
-                value: p, groupValue: selected,
-                dense: true, contentPadding: EdgeInsets.zero,
-                onChanged: (v) => setDialogState(() => selected = v),
-              )),
-              const Divider(),
-            ],
-            Row(children: [
-              const Text('数量:', style: TextStyle(fontSize: 15)),
-              const SizedBox(width: 12),
-              SizedBox(width: 80, child: TextField(
-                controller: qtyCtrl,
-                keyboardType: TextInputType.number,
-                autofocus: true,
-                textInputAction: TextInputAction.done,
-                decoration: const InputDecoration(isDense: true, border: OutlineInputBorder(), contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10)),
-                onSubmitted: (_) => doPrint(),
-              )),
-            ]),
-          ]),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
-            ElevatedButton(onPressed: doPrint, child: const Text('打印')),
-          ],
-        );
-      });
-    });
+  Widget _buildPrintButtons() {
+    final hasIp = (String id) => _printers.any((p) => p.id == id && p.ip.isNotEmpty);
+    return Row(children: [
+      if (hasIp('p1')) Expanded(child: _printBtn('大价签', const Color(0xFFFF9800), 'p1')),
+      const SizedBox(width: 6),
+      if (hasIp('p2')) Expanded(child: _printBtn('中双列', const Color(0xFF00897B), 'p2')),
+      const SizedBox(width: 6),
+      if (hasIp('p3')) Expanded(child: _printBtn('中单列', const Color(0xFF00897B), 'p3')),
+      const SizedBox(width: 6),
+      if (hasIp('p4')) Expanded(child: _printBtn('小价签', Colors.grey, 'p4')),
+    ]);
   }
 
-  Future<void> _doPrint(PrinterConfig config, int qty) async {
-    try {
-      final name = _nameController.text.isNotEmpty ? _nameController.text : _barcodeController.text;
-      final barcode = _barcodeController.text;
-      final isNew = _result == AnalysisResult.newItem;
-      final rawPrice = isNew ? _newSellPriceController2.text : _sellPriceController.text;
-      final price = rawPrice.isNotEmpty ? rawPrice : '0';
-      final supplier = _effSupplier.isNotEmpty ? _effSupplier : '';
-      final unit = _effUnit.isNotEmpty ? _effUnit : '';
+  Widget _printBtn(String label, Color color, String printerId) {
+    return SizedBox(
+      height: 42,
+      child: OutlinedButton.icon(
+        onPressed: () => _handleDirectPrint(printerId),
+        icon: Icon(Icons.print, size: 16, color: color),
+        label: Text(label, style: TextStyle(fontSize: 12, color: color)),
+        style: OutlinedButton.styleFrom(
+          side: BorderSide(color: color.withValues(alpha: 0.5)),
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+        ),
+      ),
+    );
+  }
 
-      // Send HTTP POST JSON to PC print server (PC converts to TSPL/ZPL)
-      final json = jsonEncode({
-        'barcode': barcode, 'name': name,
-        'price': price, 'supplier': supplier, 'unit': unit,
-        'templateId': config.id,
-        'showPrice': config.showPrice ? '1' : '0',
-        'qty': '$qty',
-      });
-      final body = utf8.encode(json);
+  Future<void> _handleDirectPrint(String printerId) async {
+    final printer = _printers.firstWhere((p) => p.id == printerId, orElse: () => _printers.first);
+    if (printer.ip.isEmpty) return;
+
+    final name = _nameController.text.isNotEmpty ? _nameController.text : _barcodeController.text;
+    final barcode = _barcodeController.text;
+    final isNew = _result == AnalysisResult.newItem;
+    final rawPrice = isNew ? _newSellPriceController2.text : _sellPriceController.text;
+    final price = rawPrice.isNotEmpty ? rawPrice : '0';
+    final supplier = _effSupplier.isNotEmpty ? _effSupplier : '';
+    final unit = _effUnit.isNotEmpty ? _effUnit : '';
+
+    final json = jsonEncode({
+      'barcode': barcode, 'name': name,
+      'price': price, 'supplier': supplier, 'unit': unit,
+      'templateId': printerId,
+      'showPrice': printerId == 'p1' ? '1' : '0',
+      'qty': '1',
+    });
+
+    showDialog(context: context, builder: (ctx) => _PrintQtyDialog(
+      json: json, pcAddr: '${printer.ip}:${printer.port}',
+      onResult: (err) {
+        if (mounted) _showInline(err ?? '✅ 已发送到打印机', isError: err != null);
+      },
+    ));
+  }
+
+  void _showPrintDialog() => _handleDirectPrint('p1'); // backward compat
+
+  Future<void> _doPrint(PrinterConfig config, int qty) async {
+    // Deprecated — now handled by _PrintQtyDialog
+    _handleDirectPrint(config.id);
+  }
+}
+
+// ── Print quantity dialog (quantity + price toggle only, no printer selection) ──
+
+class _PrintQtyDialog extends StatefulWidget {
+  final String json;
+  final String pcAddr;
+  final void Function(String? error)? onResult;
+  const _PrintQtyDialog({required this.json, required this.pcAddr, this.onResult});
+  @override State<_PrintQtyDialog> createState() => _PrintQtyDialogState();
+}
+
+class _PrintQtyDialogState extends State<_PrintQtyDialog> {
+  final _qtyCtrl = TextEditingController(text: '1');
+  bool _showPrice = false;
+  bool _busy = false;
+  late String _json;
+  String _templateId = '';
+
+  @override void initState() {
+    super.initState();
+    _json = widget.json;
+    _templateId = RegExp(r'"templateId":"([^"]*)"').firstMatch(widget.json)?.group(1) ?? '';
+    _loadPriceMemory();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _qtyCtrl.selection = TextSelection(baseOffset: 0, extentOffset: _qtyCtrl.text.length);
+    });
+  }
+  @override void dispose() { _qtyCtrl.dispose(); super.dispose(); }
+
+  Future<void> _loadPriceMemory() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (mounted) setState(() => _showPrice = prefs.getBool('print_sp_$_templateId') ?? false);
+  }
+
+  Future<void> _doPrint() async {
+    final qty = int.tryParse(_qtyCtrl.text) ?? 1;
+    if (qty < 1) return;
+    _json = _json.replaceAll(RegExp(r'"showPrice":"[01]"'), '"showPrice":"${_showPrice ? "1" : "0"}"');
+    _json = _json.replaceAll(RegExp(r'"qty":"\d+"'), '"qty":"$qty"');
+    setState(() => _busy = true);
+    try {
+      final parts = widget.pcAddr.split(':');
+      final ip = parts[0];
+      final pt = int.tryParse(parts.length > 1 ? parts[1] : '18888') ?? 18888;
+      final body = utf8.encode(_json);
       final all = utf8.encode(
         'POST / HTTP/1.1\r\n'
-        'Host: ${config.ip}:${config.port}\r\n'
+        'Host: ${widget.pcAddr}\r\n'
         'Content-Type: application/json\r\n'
         'Content-Length: ${body.length}\r\n'
         'Connection: close\r\n'
         '\r\n') + body;
-      final socket = await Socket.connect(config.ip, config.port, timeout: const Duration(seconds: 5));
-      socket.add(all);
-      await socket.flush();
-      await socket.close();
-
+      final s = await Socket.connect(ip, pt, timeout: const Duration(seconds: 5));
+      s.add(all);
+      await s.flush(); await s.close();
       if (mounted) {
-        _showInline('✅ 已发送到打印机');
+        Navigator.pop(context);
+        widget.onResult?.call(null);
       }
     } catch (e) {
-      if (mounted) _showInline('❌ 打印失败: $e', isError: true);
+      if (mounted) {
+        Navigator.pop(context);
+        widget.onResult?.call('$e');
+      }
     }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('打印', style: TextStyle(fontSize: 16)),
+      content: Column(mainAxisSize: MainAxisSize.min, children: [
+        Row(children: [
+          const Text('数量:', style: TextStyle(fontSize: 15)),
+          const SizedBox(width: 12),
+          SizedBox(width: 100, child: TextField(
+            controller: _qtyCtrl, keyboardType: TextInputType.number, autofocus: true,
+            decoration: const InputDecoration(isDense: true, contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 10), border: OutlineInputBorder()),
+            onSubmitted: (_) => _doPrint(),
+          )),
+          if (_json.contains('"showPrice"')) ...[
+            const SizedBox(width: 16),
+            Row(mainAxisSize: MainAxisSize.min, children: [
+              Checkbox(value: _showPrice, onChanged: (v) {
+                setState(() => _showPrice = v ?? true);
+              }, visualDensity: VisualDensity.compact),
+              const Text('价格', style: TextStyle(fontSize: 13)),
+            ]),
+          ],
+        ]),
+      ]),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
+        ElevatedButton(
+          onPressed: _busy ? null : _doPrint,
+          child: _busy ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) : const Text('打印'),
+        ),
+      ],
+    );
   }
 }

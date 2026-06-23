@@ -36,12 +36,6 @@ class _LoginPageState extends State<LoginPage> {
     super.initState();
     _controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..addJavaScriptChannel('flutterQRReady', onMessageReceived: (_) {
-        if (!_qrReady) {
-          setState(() => _qrReady = true);
-          _startPolling();
-        }
-      })
       ..setUserAgent('Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36')
       ..setNavigationDelegate(NavigationDelegate(
         onNavigationRequest: (request) => NavigationDecision.navigate,
@@ -52,6 +46,11 @@ class _LoginPageState extends State<LoginPage> {
             _onLoginSuccess();
           } else if (url.contains('signin') || url.contains('login') || url.contains('account')) {
             _injectAutoFill();
+            // Start polling immediately after page loads (iOS WKWebView JS channels unreliable)
+            if (!_qrReady) {
+              _qrReady = true;
+              _startPolling();
+            }
           }
         },
         onWebResourceError: (error) {
