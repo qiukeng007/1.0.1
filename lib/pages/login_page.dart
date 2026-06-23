@@ -68,20 +68,18 @@ class _LoginPageState extends State<LoginPage> {
     _pollTimer?.cancel();
     _pollTimer = Timer.periodic(const Duration(seconds: 5), (_) {
       if (_loggedIn) return;
-      // Check if logged in by trying to access /Product/Manage via fetch
+      // Check login by requesting /Product/Manage with follow redirects.
+      // If logged in → ends at /Product/Manage. If not → ends at /account/signin.
       _controller.runJavaScript('''
         (function() {
-          if (window._loginChecked) return;
-          window._loginChecked = true;
-          fetch('/Product/Manage', { redirect: 'manual' }).then(function(r) {
-            window._loginChecked = false;
-            // If not redirected to signin, we're logged in
-            if (!r.redirected && r.status === 200) {
-              window.location.href = '/Product/Manage';
-            } else if (r.redirected && r.url.indexOf('signin') === -1) {
+          if (window._loginCheckBusy) return;
+          window._loginCheckBusy = true;
+          fetch('/Product/Manage').then(function(r) {
+            window._loginCheckBusy = false;
+            if (r.url && r.url.indexOf('/Product/Manage') !== -1 && r.url.indexOf('signin') === -1) {
               window.location.href = '/Product/Manage';
             }
-          }).catch(function() { window._loginChecked = false; });
+          }).catch(function() { window._loginCheckBusy = false; });
         })();
       ''');
     });
