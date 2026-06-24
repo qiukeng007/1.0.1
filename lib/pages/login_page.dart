@@ -259,27 +259,31 @@ class _LoginPageState extends State<LoginPage> {
       debugPrint('🔍 WebView URL: $webViewUrl');
       debugPrint('🔍 WebView document.cookie: "$webViewCookie"');
 
-      // Validate
+      // Validate: use JS document.cookie directly (bypass native cookie store issues)
       String validateMsg = '';
-      try {
-        final client = HttpClient();
-        client.connectionTimeout = const Duration(seconds: 8);
-        final req = await client.getUrl(Uri.parse('${widget.baseUrl}/Product/Manage'));
-        req.headers.set('Cookie', cookieStr);
-        req.followRedirects = false;
-        final resp = await req.close();
-        final loc = resp.headers.value('location') ?? '';
-        client.close();
+      if (webViewCookie.isNotEmpty) {
+        try {
+          final client = HttpClient();
+          client.connectionTimeout = const Duration(seconds: 8);
+          final req = await client.getUrl(Uri.parse('${widget.baseUrl}/Product/Manage'));
+          req.headers.set('Cookie', webViewCookie); // use JS cookies directly
+          req.followRedirects = false;
+          final resp = await req.close();
+          final loc = resp.headers.value('location') ?? '';
+          client.close();
 
-        if (loc.contains('signin') || loc.contains('login')) {
-          validateMsg = 'URL会话:${urlContainsSession ? "是" : "否"} Cookie:${webViewCookie.length}Byte 同步:${syncedCount}个';
-        } else if (resp.statusCode == 200) {
-          validateMsg = '✅ 验证通过';
-        } else {
-          validateMsg = '状态:${resp.statusCode}';
+          if (loc.contains('signin') || loc.contains('login')) {
+            validateMsg = 'JS-Cookie ${webViewCookie.length}Byte 重定向登录页 (缺HttpOnly会话)';
+          } else if (resp.statusCode == 200) {
+            validateMsg = '✅ 验证通过！可正常使用';
+          } else {
+            validateMsg = '状态:${resp.statusCode}';
+          }
+        } catch (e) {
+          validateMsg = '异常:$e';
         }
-      } catch (e) {
-        validateMsg = '异常:$e';
+      } else {
+        validateMsg = 'WebView JS Cookie为空';
       }
 
       // Fetch stores

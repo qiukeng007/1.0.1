@@ -74,20 +74,48 @@ import AudioToolbox
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 
-  /// Get the WKWebView's actual cookie store (may NOT be `.default()`).
-  private func getWebViewCookieStore() -> WKHTTPCookieStore {
-    if let rootView = window?.rootViewController?.view,
-       let webView = findWKWebView(in: rootView) {
-      return webView.configuration.websiteDataStore.httpCookieStore
+  /// Collect cookies from ALL WKWebView instances (may use different data stores).
+  private func getAllWebViewCookies(completion: @escaping ([HTTPCookie]) -> Void) {
+    guard let rootView = window?.rootViewController?.view else {
+      completion([])
+      return
     }
-    return WKWebsiteDataStore.default().httpCookieStore
+    let webViews = findAllWKWebViews(in: rootView)
+    if webViews.isEmpty {
+      // Fallback: try default store
+      WKWebsiteDataStore.default().httpCookieStore.getAllCookies(completion)
+      return
+    }
+
+    var allCookies: [HTTPCookie] = []
+    let group = DispatchGroup()
+    for webView in webViews {
+      group.enter()
+      webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { cookies in
+        allCookies.append(contentsOf: cookies)
+        group.leave()
+      }
+    }
+    group.notify(queue: .main) {
+      completion(allCookies)
+    }
+  }
+
+  private func findAllWKWebViews(in view: UIView) -> [WKWebView] {
+    var result: [WKWebView] = []
+    if let webView = view as? WKWebView {
+      result.append(webView)
+    }
+    for subview in view.subviews {
+      result.append(contentsOf: findAllWKWebViews(in: subview))
+    }
+    return result
   }
 
   /// Copy WKWebView cookies → NSHTTPCookieStorage synchronously.
   /// Calls completion with the number of cookies synced.
   private func syncCookiesToShared(completion: @escaping (Int) -> Void) {
-    let store = getWebViewCookieStore()
-    store.getAllCookies { wkCookies in
+    getAllWebViewCookies { wkCookies in
       let shared = HTTPCookieStorage.shared
       var synced = 0
       for cookie in wkCookies {
@@ -281,9 +309,7 @@ import AudioToolbox
   // MARK: - Cookie helpers
 
   private func getCookies(for url: String, result: @escaping FlutterResult) {
-    // Use the WebView's ACTUAL cookie store, not WKWebsiteDataStore.default()
-    let store = getWebViewCookieStore()
-    store.getAllCookies { cookies in
+    getAllWebViewCookies { cookies in
       let cookieStr = cookies.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
       result(cookieStr)
     }
