@@ -1,10 +1,9 @@
 import 'dart:async';
-import 'dart:convert';
-import 'dart:io' show Platform, HttpClient, HttpClientResponse, HttpHeaders;
+import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:webview_flutter/webview_flutter.dart';
 import '../utils/constants.dart';
 import '../services/store_service.dart';
 
@@ -27,198 +26,111 @@ class LoginPage extends StatefulWidget {
 }
 
 class _LoginPageState extends State<LoginPage> {
-  // ── Android: WebView login ──
-  late final WebViewController _controller;
-  bool _webLoading = true;
-  bool _webLoggedIn = false;
+  InAppWebViewController? _controller;
+  bool _loading = true;
+  bool _loggedIn = false;
+  bool _wxCallbackSeen = false;
   Timer? _pollTimer;
+  Timer? _urlTimer;
 
-  // ── iOS: direct HTTP login ──
-  String _iosStatus = '';
-  bool _iosError = false;
-
-  static const _httpUa =
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36';
-  static const _webUa =
-      'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36';
+  static String get _ua {
+    if (Platform.isIOS) {
+      return 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
+    }
+    return 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36';
+  }
 
   @override
-  void initState() {
-    super.initState();
-    if (Platform.isIOS) {
-      // iOS: try fast HTTP login first. If server requires WeChat (re-enabled
-      // later), auto-fallback to WebView so the user can scan the QR code.
-      _doHttpLogin();
-    } else {
-      _initWebView();
-    }
-  }
+  void dispose() { _stopPolling(); super.dispose(); }
 
-  /// Switch to WebView login on iOS (when HTTP login detects WeChat required).
-  void _fallbackToWebView() {
-    setState(() {
-      _iosStatus = '';
-      _iosError = false;
-    });
-    _initWebView();
-  }
+  // ---- Navigation handling ----
 
-  // ═══════════════════════════════════════════════
-  //  iOS: direct HTTP login (no WebView)
-  // ═══════════════════════════════════════════════
+  void _onLoadStop(InAppWebViewController ctrl, Uri? url) {
+    if (_loggedIn || url == null) return;
+    final u = url.toString();
+    debugPrint('📄 $u');
+    setState(() => _loading = false);
 
-  Future<void> _doHttpLogin() async {
-    final baseUrl = widget.baseUrl.replaceAll(RegExp(r'/$'), '');
-    final account = widget.account.trim();
-    final jobNumber = widget.cashierJobNumber.trim();
-    final password = widget.password.trim();
-
-    if (account.isEmpty || jobNumber.isEmpty || password.isEmpty) {
-      _iosError = true;
-      setState(() => _iosStatus = '请填写门店账号、员工工号和工号密码');
+    if (u.contains('/Product/Manage') || u.contains('/Home')) {
+      _stopPolling();
+      _onLoginSuccess();
       return;
     }
 
-    final client = HttpClient()..connectionTimeout = const Duration(seconds: 15);
-    try {
-      // Step 1: GET signin page
-      setState(() => _iosStatus = '正在打开登录页…');
-      final signinUri = Uri.parse('$baseUrl/account/signin?ReturnUrl=%2fProduct%2fManage');
-      final r1 = await client.getUrl(signinUri);
-      r1.headers.set('User-Agent', _httpUa);
-      r1.followRedirects = false;
-      final resp1 = await r1.close().timeout(const Duration(seconds: 15));
-      await _drain(resp1);
-      if (resp1.statusCode >= 400) { _fail('无法打开登录页 (${resp1.statusCode})'); return; }
-      String cookie = _merge('', resp1.headers);
-
-      // Step 2: POST login
-      setState(() => _iosStatus = '正在登录…');
-      final r2 = await client.postUrl(Uri.parse('$baseUrl/account/SignIn'));
-      r2.headers.set('User-Agent', _httpUa);
-      r2.headers.set('Accept', 'application/json, text/javascript, */*');
-      r2.headers.set('Referer', signinUri.toString());
-      r2.headers.set('Origin', baseUrl);
-      r2.headers.set('Content-Type', 'application/x-www-form-urlencoded; charset=UTF-8');
-      r2.headers.set('X-Requested-With', 'XMLHttpRequest');
-      if (cookie.isNotEmpty) r2.headers.set('Cookie', cookie);
-      r2.followRedirects = false;
-      r2.write('userName=${Uri.encodeComponent('$account:$jobNumber')}&password=${Uri.encodeComponent(password)}&returnUrl=%2fProduct%2fManage&screenSize=1080*1920&employeeSignin=true');
-      final resp2 = await r2.close().timeout(const Duration(seconds: 15));
-      final body2 = await _read(resp2);
-      cookie = _merge(cookie, resp2.headers);
-
-      // Step 3: Parse
-      String? redirectUrl;
-      try {
-        final j = jsonDecode(body2) as Map<String, dynamic>;
-        if (j['successed'] != true) { final msg = j['msg'] as String? ?? ''; if (msg.contains('微信') || msg.contains('扫码') || msg.contains('wechat')) { _fallbackToWebView(); } else { _fail('登录失败：${msg.isNotEmpty ? msg : "未知错误"}'); } return; }
-        redirectUrl = j['msg'] as String?;
-        if (redirectUrl == null || redirectUrl.isEmpty) { _fail('服务器未返回重定向'); return; }
-      } catch (_) { _fail('无法解析服务器响应'); return; }
-
-      // Step 4: Follow redirect
-      setState(() => _iosStatus = '正在验证…');
-      final redirUri = redirectUrl.startsWith('http')
-          ? Uri.parse(redirectUrl)
-          : Uri.parse('$baseUrl${redirectUrl.startsWith('/') ? '' : '/'}$redirectUrl');
-      final r3 = await client.getUrl(redirUri);
-      r3.headers.set('User-Agent', _httpUa);
-      r3.headers.set('Cookie', cookie);
-      r3.headers.set('Referer', signinUri.toString());
-      r3.followRedirects = false;
-      final resp3 = await r3.close().timeout(const Duration(seconds: 10));
-      await _drain(resp3);
-      cookie = _merge(cookie, resp3.headers);
-
-      // Step 5: Verify
-      final r4 = await client.getUrl(Uri.parse('$baseUrl/Product/Manage'));
-      r4.headers.set('User-Agent', _httpUa);
-      r4.headers.set('Cookie', cookie);
-      r4.followRedirects = false;
-      final resp4 = await r4.close().timeout(const Duration(seconds: 10));
-      final vBody = await _read(resp4);
-      final vLoc = resp4.headers.value('location') ?? '';
-      if (vLoc.contains('signin') || vLoc.contains('login') ||
-          (vBody.contains('signin') && vBody.contains('form'))) {
-        _fail('验证失败：Cookie 无效'); return;
-      }
-
-      // Save & done
-      final storeKey = '$baseUrl|$account|$jobNumber';
-      await (await SharedPreferences.getInstance()).setString('cookie_$storeKey', cookie);
-      try {
-        final stores = await StoreService.fetchStores(baseUrl: baseUrl, cookie: cookie);
-        if (stores.isNotEmpty) await StoreService.saveStores(baseUrl, stores);
-      } catch (_) {}
-      if (mounted) { Navigator.of(context).pop(true); }
-    } catch (e) { _fail('$e'); }
-    finally { client.close(); }
-  }
-
-  void _fail(String msg) {
-    if (mounted) setState(() { _iosError = true; _iosStatus = msg; });
-  }
-
-  Future<String> _read(HttpClientResponse r) async {
-    final b = <int>[]; await for (final c in r) { b.addAll(c); } return utf8.decode(b);
-  }
-  Future<void> _drain(HttpClientResponse r) async { await _read(r); }
-
-  String _merge(String cur, HttpHeaders h) {
-    final m = <String, String>{};
-    for (final p in cur.split(';')) { final e = p.trim().indexOf('='); if (e > 0) m[p.substring(0, e).trim()] = p.substring(e + 1).trim(); }
-    for (final raw in h['set-cookie'] ?? <String>[]) {
-      final s = raw.indexOf(';'); final nv = s > 0 ? raw.substring(0, s).trim() : raw.trim();
-      final eq = nv.indexOf('=');
-      if (eq > 0) { final nm = nv.substring(0, eq).trim(); if (!RegExp(r'^(path|domain|expires|max-age|secure|httponly|samesite)', caseSensitive: false).hasMatch(nm)) { m[nm] = nv.substring(eq + 1).trim(); } }
+    // Fix 2: stuck on LoginByWx intermediate page
+    if (u.contains('LoginByWx=true')) {
+      debugPrint('🔄 stuck at LoginByWx, forcing /Product/Manage');
+      _stopPolling();
+      Future.delayed(const Duration(milliseconds: 500), () {
+        if (!_loggedIn) ctrl.loadUrl(urlRequest: URLRequest(url: WebUri('${widget.baseUrl}/Product/Manage')));
+      });
+      return;
     }
-    return m.entries.map((e) => '${e.key}=${e.value}').join('; ');
+
+    // Fix 3: wx callback seen but back on signin
+    if (_wxCallbackSeen && (u.contains('signin') || u.contains('login'))) {
+      debugPrint('🔄 wx callback seen, trying /Product/Manage');
+      _stopPolling();
+      Future.delayed(const Duration(seconds: 1), () {
+        if (!_loggedIn) ctrl.loadUrl(urlRequest: URLRequest(url: WebUri('${widget.baseUrl}/Product/Manage')));
+      });
+      return;
+    }
+
+    if (u.contains('signin') || u.contains('login') || u.contains('account')) {
+      _injectAutoFill(ctrl);
+      Future.delayed(const Duration(seconds: 10), () {
+        if (mounted && !_loggedIn) _startPolling();
+      });
+    }
   }
 
-  // ═══════════════════════════════════════════════
-  //  Android: WebView login (unchanged)
-  // ═══════════════════════════════════════════════
+  bool _shouldOverrideUrl(InAppWebViewController ctrl, NavigationAction action) {
+    final url = action.request.url?.toString() ?? '';
+    debugPrint('🔀 $url');
 
-  void _initWebView() {
-    _controller = WebViewController()
-      ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setUserAgent(_webUa)
-      ..setNavigationDelegate(NavigationDelegate(
-        onNavigationRequest: (request) => NavigationDecision.navigate,
-        onPageFinished: (url) {
-          setState(() => _webLoading = false);
-          if (url.contains('/Product/Manage') || url.contains('/Home')) {
-            _stopPolling();
-            _onWebLoginSuccess();
-          } else if (url.contains('signin') || url.contains('login') || url.contains('account')) {
-            _injectAutoFill();
-            Future.delayed(const Duration(seconds: 10), () {
-              if (mounted && !_webLoggedIn) _startPolling();
-            });
-          }
-        },
-      ))
-      ..loadRequest(Uri.parse('${widget.baseUrl}/account/signin?ReturnUrl=%2fProduct%2fManage'));
+    // Fix 1: block duplicate UserLoginByWx
+    if (url.contains('UserLoginByWx')) {
+      if (_wxCallbackSeen) {
+        debugPrint('🛑 BLOCKED duplicate UserLoginByWx');
+        return true; // cancel
+      }
+      _wxCallbackSeen = true;
+      ctrl.evaluateJavascript(source: 'for(var i=1;i<99999;i++){clearInterval(i);clearTimeout(i);}');
+    }
+    return false; // allow
   }
+
+  // ---- Polling ----
 
   void _startPolling() {
     _pollTimer?.cancel();
     _pollTimer = Timer.periodic(const Duration(seconds: 4), (_) async {
-      if (_webLoggedIn) return;
+      if (_loggedIn || _controller == null) return;
       try {
-        const channel = MethodChannel('com.smarteye/cookies');
-        final c = await channel.invokeMethod('getCookies', {'url': widget.baseUrl}) as String? ?? '';
-        if (c.isNotEmpty) { _stopPolling(); _onWebLoginSuccess(); }
+        final cookies = await _controller!.getCookies(url: WebUri(widget.baseUrl));
+        if (cookies.isNotEmpty) { _stopPolling(); _onLoginSuccess(); }
+      } catch (_) {}
+    });
+    _urlTimer?.cancel();
+    _urlTimer = Timer.periodic(const Duration(seconds: 3), (_) async {
+      if (_loggedIn || _controller == null) return;
+      try {
+        final u = await _controller!.getUrl();
+        if (u != null && (u.toString().contains('/Product/Manage') || u.toString().contains('/Home'))) {
+          _stopPolling(); _onLoginSuccess();
+        }
       } catch (_) {}
     });
   }
 
-  void _stopPolling() { _pollTimer?.cancel(); _pollTimer = null; }
+  void _stopPolling() { _pollTimer?.cancel(); _pollTimer = null; _urlTimer?.cancel(); _urlTimer = null; }
 
-  Future<void> _injectAutoFill() async {
-    if (_webLoggedIn) return;
-    await _controller.runJavaScript('''
+  // ---- Auto-fill ----
+
+  Future<void> _injectAutoFill(InAppWebViewController ctrl) async {
+    if (_loggedIn) return;
+    await ctrl.evaluateJavascript(source: '''
       (function(){
         var emp=document.querySelector('span[data-type="2"]');if(emp)emp.click();
         setTimeout(function(){
@@ -227,77 +139,89 @@ class _LoginPageState extends State<LoginPage> {
           var a=document.getElementById('txt_userName')||document.querySelector('input[placeholder*="账号"]');if(a){a.value='${widget.account}';a.dispatchEvent(new Event('input',{bubbles:true}));a.dispatchEvent(new Event('change',{bubbles:true}));}
           setTimeout(function(){
             var btn=document.querySelector('button[type="submit"]')||document.querySelector('input[type="submit"]')||document.querySelector('button.btn-primary')||document.querySelector('a.btn-primary')||document.querySelector('button[class*="login"]')||document.querySelector('button[class*="submit"]')||document.querySelector('a[class*="login"]');
-            if(btn)btn.click();
-            else{var fs=document.querySelectorAll('form');for(var f=0;f<fs.length;f++)try{fs[f].submit()}catch(e){}}
+            if(btn)btn.click();else{var fs=document.querySelectorAll('form');for(var f=0;f<fs.length;f++)try{fs[f].submit()}catch(e){}}
           },400);
         },500);
       })();
     ''');
   }
 
-  Future<void> _onWebLoginSuccess() async {
-    if (_webLoggedIn) return;
-    _webLoggedIn = true;
+  // ---- Login success ----
+
+  Future<void> _onLoginSuccess() async {
+    if (_loggedIn || _controller == null) return;
+    _loggedIn = true;
     try {
-      String c = '';
-      try { const ch = MethodChannel('com.smarteye/cookies'); c = await ch.invokeMethod('getCookies', {'url': widget.baseUrl}) as String? ?? ''; } catch (_) {}
-      if (c.isEmpty) try { c = await _controller.runJavaScriptReturningResult('document.cookie') as String? ?? ''; } catch (_) {}
-      if (c.isNotEmpty) {
+      await Future.delayed(const Duration(seconds: 2));
+
+      // Get cookies using InAppWebView's API (respects sharedCookiesEnabled)
+      String cookieStr = '';
+      try {
+        final cookies = await _controller!.getCookies(url: WebUri(widget.baseUrl));
+        cookieStr = cookies.map((c) => '${c.name}=${c.value}').join('; ');
+      } catch (_) {}
+      if (cookieStr.isEmpty) {
+        try {
+          final js = await _controller!.evaluateJavascript(source: 'document.cookie');
+          cookieStr = (js as String?) ?? '';
+        } catch (_) {}
+      }
+
+      if (cookieStr.isNotEmpty) {
         final p = await SharedPreferences.getInstance();
-        await p.setString('cookie_${widget.baseUrl}|${widget.account}|${widget.cashierJobNumber}', c);
-        try { final s = await StoreService.fetchStores(baseUrl: widget.baseUrl, cookie: c); if (s.isNotEmpty) await StoreService.saveStores(widget.baseUrl, s); } catch (_) {}
+        await p.setString('cookie_${widget.baseUrl}|${widget.account}|${widget.cashierJobNumber}', cookieStr);
+        try {
+          final s = await StoreService.fetchStores(baseUrl: widget.baseUrl, cookie: cookieStr);
+          if (s.isNotEmpty) await StoreService.saveStores(widget.baseUrl, s);
+        } catch (_) {}
       }
       if (mounted) { Navigator.of(context).pop(true); }
     } catch (_) { if (mounted) Navigator.of(context).pop(true); }
   }
 
   @override
-  void dispose() { _stopPolling(); super.dispose(); }
-
-  @override
   Widget build(BuildContext context) {
-    if (Platform.isIOS) {
-      // Show WebView when HTTP login fell back (WeChat required)
-      if (_iosStatus.isEmpty) {
-        return Scaffold(
-          backgroundColor: AppConstants.bgColor,
-          appBar: AppBar(title: const Text('微信扫码登录', style: TextStyle(fontSize: 16))),
-          body: Expanded(child: WebViewWidget(controller: _controller)),
-        );
-      }
-      return Scaffold(
-        backgroundColor: AppConstants.bgColor,
-        appBar: AppBar(title: const Text('员工登录', style: TextStyle(fontSize: 16))),
-        body: Center(
-          child: Column(mainAxisSize: MainAxisSize.min, children: [
-            if (!_iosError) ...[
-              const SizedBox(width: 48, height: 48, child: CircularProgressIndicator(strokeWidth: 3)),
-              const SizedBox(height: 24),
-            ] else ...[
-              const Icon(Icons.error_outline, size: 48, color: Colors.red),
-              const SizedBox(height: 24),
-            ],
-            Text(_iosStatus, style: TextStyle(fontSize: 15, color: _iosError ? Colors.red : AppConstants.textSecondary)),
-            if (_iosError) ...[
-              const SizedBox(height: 24),
-              ElevatedButton(onPressed: () => Navigator.pop(context), child: const Text('返回')),
-            ],
-          ]),
-        ),
-      );
-    }
-
-    // Android: WebView
     return Scaffold(
       backgroundColor: AppConstants.bgColor,
       appBar: AppBar(
         title: const Text('微信扫码登录', style: TextStyle(fontSize: 16)),
         actions: [
-          if (_webLoading)
+          if (_loading)
             const Padding(padding: EdgeInsets.only(right: 16), child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))),
+          if (!_loading && !_loggedIn)
+            IconButton(icon: const Icon(Icons.refresh, size: 22), tooltip: '刷新', onPressed: () {
+              _controller?.loadUrl(urlRequest: URLRequest(url: WebUri('${widget.baseUrl}/account/signin?ReturnUrl=%2fProduct%2fManage')));
+              setState(() => _loading = true);
+            }),
         ],
       ),
-      body: Expanded(child: WebViewWidget(controller: _controller)),
+      body: Column(children: [
+        Container(
+          width: double.infinity, padding: const EdgeInsets.all(14),
+          color: AppConstants.primaryColor.withValues(alpha: 0.05),
+          child: Column(children: [
+            if (_loading)
+              const Text('⏳ 正在加载…', style: TextStyle(fontSize: 13, color: AppConstants.textSecondary))
+            else ...[
+              const Text('📸 请截图后用微信扫一扫验证', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: AppConstants.primaryColor)),
+              const SizedBox(height: 4),
+              const Text('微信 → 扫一扫 → 右下角相册 → 选择截图', style: TextStyle(fontSize: 12, color: AppConstants.textSecondary)),
+            ],
+          ]),
+        ),
+        Expanded(child: InAppWebView(
+          initialUrlRequest: URLRequest(url: WebUri('${widget.baseUrl}/account/signin?ReturnUrl=%2fProduct%2fManage')),
+          initialSettings: InAppWebViewSettings(
+            javaScriptEnabled: true,
+            userAgent: _ua,
+            // KEY: share cookies with NSHTTPCookieStorage on iOS
+            sharedCookiesEnabled: true,
+          ),
+          onWebViewCreated: (ctrl) => _controller = ctrl,
+          onLoadStop: _onLoadStop,
+          shouldOverrideUrlLoading: _shouldOverrideUrl,
+        )),
+      ]),
     );
   }
 }
