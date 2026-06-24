@@ -1,289 +1,34 @@
 import Flutter
 import UIKit
 import WebKit
-import AVFoundation
-import AudioToolbox
 
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
   private var webViewUserScriptInstalled = false
 
-  // Audio recording state
-  private var audioEngine: AVAudioEngine?
-  private var audioFileHandle: FileHandle?
-  private var audioDataSize: Int = 0
-  private let audioSampleRate: Double = 16000
-
   override func application(
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
-    if let controller = window?.rootViewController as? FlutterViewController {
-      let messenger = controller.binaryMessenger
-
-      // ── Cookie channel ──
-      let cookieChannel = FlutterMethodChannel(name: "com.smarteye/cookies", binaryMessenger: messenger)
-      cookieChannel.setMethodCallHandler { (call, result) in
-        if call.method == "getCookies" {
-          guard let args = call.arguments as? [String: Any],
-                let url = args["url"] as? String else {
-            result("")
-            return
-          }
-          self.installWindowOpenOverrideIfNeeded()
-          self.getCookies(for: url, result: result)
-        } else if call.method == "syncToShared" {
-          self.syncCookiesToShared { count in
-            result(count)
-          }
-        } else {
-          result(FlutterMethodNotImplemented)
-        }
-      }
-
-      // ── Audio recording channel (PCM WAV for offline ASR) ──
-      let audioChannel = FlutterMethodChannel(name: "com.smarteye/audio", binaryMessenger: messenger)
-      audioChannel.setMethodCallHandler { (call, result) in
-        if call.method == "startRecord" {
-          guard let args = call.arguments as? [String: Any],
-                let path = args["path"] as? String else {
-            result(FlutterError(code: "NO_PATH", message: "Missing path", details: nil))
-            return
-          }
-          self.startRecording(path: path, result: result)
-        } else if call.method == "stopRecord" {
-          self.stopRecording(result: result)
-        } else {
-          result(FlutterMethodNotImplemented)
-        }
-      }
-
-      // ── Audio play channel (beep feedback) ──
-      let audioPlayChannel = FlutterMethodChannel(name: "com.smarteye/audio_play", binaryMessenger: messenger)
-      audioPlayChannel.setMethodCallHandler { (call, result) in
-        if call.method == "beep" {
-          let start = (call.arguments as? [String: Any])?["start"] as? Bool ?? true
-          self.playBeep(start: start)
-          result(nil)
-        } else {
-          result(FlutterMethodNotImplemented)
-        }
-      }
-    }
-
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 
-  /// Collect cookies from ALL WKWebView instances (may use different data stores).
-  private func getAllWebViewCookies(completion: @escaping ([HTTPCookie]) -> Void) {
-    guard let rootView = window?.rootViewController?.view else {
-      completion([])
-      return
-    }
-    let webViews = findAllWKWebViews(in: rootView)
-    if webViews.isEmpty {
-      // Fallback: try default store
-      WKWebsiteDataStore.default().httpCookieStore.getAllCookies(completion)
-      return
-    }
-
-    var allCookies: [HTTPCookie] = []
-    let group = DispatchGroup()
-    for webView in webViews {
-      group.enter()
-      webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { cookies in
-        allCookies.append(contentsOf: cookies)
-        group.leave()
-      }
-    }
-    group.notify(queue: .main) {
-      completion(allCookies)
+  func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
+    GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
+    // Register audio channels with the engine's binary messenger
+    // At this point window?.rootViewController should be a FlutterViewController
+    if let controller = window?.rootViewController as? FlutterViewController {
+      SmartEyePlugin.registerMessenger(controller.binaryMessenger)
     }
   }
 
-  private func findAllWKWebViews(in view: UIView) -> [WKWebView] {
-    var result: [WKWebView] = []
-    if let webView = view as? WKWebView {
-      result.append(webView)
-    }
-    for subview in view.subviews {
-      result.append(contentsOf: findAllWKWebViews(in: subview))
-    }
-    return result
-  }
-
-  /// Copy WKWebView cookies → NSHTTPCookieStorage synchronously.
-  /// Calls completion with the number of cookies synced.
-  private func syncCookiesToShared(completion: @escaping (Int) -> Void) {
-    DispatchQueue.main.async { [weak self] in
-      guard let self = self else { completion(0); return }
-      let group = DispatchGroup()
-      var all: [HTTPCookie] = []
-
-      group.enter()
-      WKWebsiteDataStore.default().httpCookieStore.getAllCookies { c in
-        all.append(contentsOf: c); group.leave()
-      }
-      if let root = self.window?.rootViewController?.view {
-        for wv in self.findAllWKWebViews(in: root) {
-          group.enter()
-          wv.configuration.websiteDataStore.httpCookieStore.getAllCookies { c in
-            all.append(contentsOf: c); group.leave()
-          }
-        }
-      }
-      group.notify(queue: .main) {
-        let shared = HTTPCookieStorage.shared
-        for cookie in all { shared.setCookie(cookie) }
-        completion(all.count)
-      }
-    }
-  }
-
-  // MARK: - Audio Recording
-
-  private func startRecording(path: String, result: @escaping FlutterResult) {
-    switch AVAudioSession.sharedInstance().recordPermission {
-    case .denied:
-      result(FlutterError(code: "PERMISSION_DENIED", message: "麦克风权限被拒绝", details: nil))
-      return
-    case .undetermined:
-      AVAudioSession.sharedInstance().requestRecordPermission { granted in
-        DispatchQueue.main.async {
-          granted
-            ? self.startRecording(path: path, result: result)
-            : result(FlutterError(code: "PERMISSION_DENIED", message: "麦克风权限被拒绝", details: nil))
-        }
-      }
-      return
-    default:
-      break
-    }
-
-    do {
-      try AVAudioSession.sharedInstance().setCategory(.record, mode: .default, options: [])
-      try AVAudioSession.sharedInstance().setActive(true)
-
-      let engine = AVAudioEngine()
-      audioEngine = engine
-      let inputNode = engine.inputNode
-      let nativeFormat = inputNode.outputFormat(forBus: 0) // device native (e.g. 44100/48000 float32)
-
-      // Prepare output file — write placeholder header, append PCM
-      let fileURL = URL(fileURLWithPath: path)
-      try Data(count: 44).write(to: fileURL)
-      audioFileHandle = try FileHandle(forWritingTo: fileURL)
-      audioFileHandle?.seek(toFileOffset: 44)
-      audioDataSize = 0
-
-      // Install tap at device native rate; downsample + float→int16 manually
-      let dstRate = audioSampleRate
-      let srcRate = nativeFormat.sampleRate
-
-      inputNode.installTap(onBus: 0, bufferSize: 1024, format: nativeFormat) { [weak self] buffer, _ in
-        guard let self = self,
-              let handle = self.audioFileHandle,
-              let floatData = buffer.floatChannelData else { return }
-
-        let frameLen = Int(buffer.frameLength)
-        let ratio = dstRate / srcRate
-        let outLen = Int(Double(frameLen) * ratio)
-        var samples = [Int16](repeating: 0, count: outLen)
-
-        for i in 0..<outLen {
-          let srcIdx = Double(i) / ratio
-          let srcFrame = Int(srcIdx)
-          let frac = Float(srcIdx - Double(srcFrame))
-          let a: Float, b: Float
-          if srcFrame + 1 < frameLen {
-            a = floatData.pointee[srcFrame]
-            b = floatData.pointee[srcFrame + 1]
-          } else if srcFrame < frameLen {
-            a = floatData.pointee[srcFrame]
-            b = a
-          } else {
-            a = 0; b = 0
-          }
-          let val = a + (b - a) * frac
-          samples[i] = Int16(max(-32768, min(32767, val * 32767)))
-        }
-
-        samples.withUnsafeBytes { ptr in
-          handle.write(Data(ptr))
-        }
-        self.audioDataSize += outLen * 2
-      }
-
-      engine.prepare()
-      try engine.start()
-      result(true)
-
-    } catch {
-      result(FlutterError(code: "RECORD_ERROR", message: error.localizedDescription, details: nil))
-    }
-  }
-
-  private func stopRecording(result: FlutterResult) {
-    audioEngine?.inputNode.removeTap(onBus: 0)
-    audioEngine?.stop()
-    audioEngine = nil
-
-    if let handle = audioFileHandle {
-      let totalLen = audioDataSize + 36
-      let byteRate = Int(audioSampleRate) * 2
-      handle.seek(toFileOffset: 0)
-      handle.write("RIFF".data(using: .ascii)!)
-      handle.write(intLE(totalLen))
-      handle.write("WAVE".data(using: .ascii)!)
-      handle.write("fmt ".data(using: .ascii)!)
-      handle.write(intLE(16))
-      handle.write(shortLE(1))
-      handle.write(shortLE(1))
-      handle.write(intLE(Int(audioSampleRate)))
-      handle.write(intLE(byteRate))
-      handle.write(shortLE(2))
-      handle.write(shortLE(16))
-      handle.write("data".data(using: .ascii)!)
-      handle.write(intLE(audioDataSize))
-      handle.closeFile()
-      audioFileHandle = nil
-      audioDataSize = 0
-    }
-
-    try? AVAudioSession.sharedInstance().setActive(false)
-    result(nil)
-  }
-
-  // MARK: - Audio Playback (beep)
-
-  private func playBeep(start: Bool) {
-    // Light haptic feedback (Dart side already triggers HapticFeedback.mediumImpact)
-    // Use a safe system sound that exists on all iOS versions
-    // 1013 = short click, 1104 = tick (both safe)
-    let soundID: SystemSoundID = start ? 1104 : 1104
-    AudioServicesPlaySystemSound(soundID)
-  }
-
-  // MARK: - WAV helpers
-
-  private func intLE(_ v: Int) -> Data {
-    var val = UInt32(v)
-    return Data(bytes: &val, count: 4)
-  }
-
-  private func shortLE(_ v: Int) -> Data {
-    var val = UInt16(v)
-    return Data(bytes: &val, count: 2)
-  }
-
-  // MARK: - WKUserScript (window.open override)
+  // MARK: - WKUserScript for window.open override
 
   private func installWindowOpenOverrideIfNeeded() {
     guard !webViewUserScriptInstalled else { return }
     guard let rootView = window?.rootViewController?.view else { return }
-
     if let webView = findWKWebView(in: rootView) {
-      let scriptSource = """
+      let script = """
         window.open=function(u,t,f){\
           if(u&&typeof u==='string'&&u!==''&&u!=='about:blank'){\
             try{window.location.href=u;}catch(e){}\
@@ -292,59 +37,25 @@ import AudioToolbox
           return window;\
         };
         """
-      let userScript = WKUserScript(
-        source: scriptSource,
-        injectionTime: .atDocumentStart,
-        forMainFrameOnly: false
-      )
+      let userScript = WKUserScript(source: script, injectionTime: .atDocumentStart, forMainFrameOnly: false)
       webView.configuration.userContentController.addUserScript(userScript)
       webViewUserScriptInstalled = true
-      NSLog("[SmartEye] WKUserScript installed: window.open → window.location override")
     }
   }
 
   private func findWKWebView(in view: UIView) -> WKWebView? {
-    if let webView = view as? WKWebView {
-      return webView
-    }
-    for subview in view.subviews {
-      if let found = findWKWebView(in: subview) {
-        return found
-      }
-    }
+    if let wv = view as? WKWebView { return wv }
+    for sub in view.subviews { if let found = findWKWebView(in: sub) { return found } }
     return nil
-  }
-
-  func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
-    GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
   }
 
   // MARK: - Cookie helpers
 
   private func getCookies(for url: String, result: @escaping FlutterResult) {
-    DispatchQueue.main.async { [weak self] in
-      guard let self = self else { result(""); return }
-      let group = DispatchGroup()
-      var all: [HTTPCookie] = []
-
-      // 1. Default store
-      group.enter()
-      WKWebsiteDataStore.default().httpCookieStore.getAllCookies { c in
-        all.append(contentsOf: c); group.leave()
-      }
-      // 2. Every WKWebView's own store
-      if let root = self.window?.rootViewController?.view {
-        for wv in self.findAllWKWebViews(in: root) {
-          group.enter()
-          wv.configuration.websiteDataStore.httpCookieStore.getAllCookies { c in
-            all.append(contentsOf: c); group.leave()
-          }
-        }
-      }
-      group.notify(queue: .main) {
-        let s = all.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
-        result(s)
-      }
+    // Return ALL cookies from default data store
+    WKWebsiteDataStore.default().httpCookieStore.getAllCookies { cookies in
+      let s = cookies.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
+      result(s)
     }
   }
 }

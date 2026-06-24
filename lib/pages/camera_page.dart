@@ -232,7 +232,10 @@ class CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
     await _searchBarcode(barcode);
   }
 
+  void _dismissKeyboard() => FocusScope.of(context).unfocus();
+
   Future<void> _searchBarcode(String barcode) async {
+    _dismissKeyboard();
     final prefs = await SharedPreferences.getInstance();
     final bu = prefs.getString('login_base_url') ?? 'beta28.pospal.cn';
     final ac = prefs.getString('login_account') ?? '';
@@ -283,7 +286,9 @@ class CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
   }
 
   Widget _buildIdle() {
-    return SingleChildScrollView(padding: const EdgeInsets.all(20), child: Column(children: [
+    return GestureDetector(
+      onTap: _dismissKeyboard,
+      child: SingleChildScrollView(padding: const EdgeInsets.fromLTRB(20, 20, 20, 120), child: Column(children: [
       const SizedBox(height: 16),
       const Text('银豹入库', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: AppConstants.textPrimary)),
       const SizedBox(height: 4),
@@ -311,14 +316,23 @@ class CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
       const SizedBox(height: 16),
       // Barcode input + scan button
       Card(child: Padding(padding: const EdgeInsets.all(12), child: Row(children: [
-        Expanded(child: GestureDetector(
-          onDoubleTap: () => _barcodeCtrl.selection = TextSelection(baseOffset: 0, extentOffset: _barcodeCtrl.text.length),
-          child: TextField(
+        Expanded(child: TextField(
           controller: _barcodeCtrl,
           keyboardType: TextInputType.number,
-          decoration: const InputDecoration(hintText: '手动输入或生成条码，双击全选', isDense: true, border: OutlineInputBorder(), contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10)),
+          textInputAction: TextInputAction.search,
+          decoration: InputDecoration(
+            hintText: '手动输入或生成条码，双击全选',
+            isDense: true,
+            border: const OutlineInputBorder(),
+            contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+            suffixIcon: IconButton(
+              icon: const Icon(Icons.search, size: 22),
+              tooltip: '搜索条码',
+              onPressed: () { if (_barcodeCtrl.text.trim().isNotEmpty) _searchBarcode(_barcodeCtrl.text.trim()); },
+            ),
+          ),
           onSubmitted: (v) { if (v.trim().isNotEmpty) _searchBarcode(v.trim()); },
-        ))),
+        )),
         const SizedBox(width: 8),
         ElevatedButton.icon(
           onPressed: _startFlow,
@@ -351,7 +365,7 @@ class CameraPageState extends State<CameraPage> with WidgetsBindingObserver {
       ]),
       const SizedBox(height: 8),
       Text('$_selectedStore · $_selectedSupplier', style: const TextStyle(fontSize: 12, color: AppConstants.textSecondary)),
-    ]));
+    ])));
   }
 
   Widget _buildCamera() {
