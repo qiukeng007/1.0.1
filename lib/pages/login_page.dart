@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'dart:io' show Platform;
+import 'dart:io' show HttpClient, Platform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -194,11 +194,9 @@ class _LoginPageState extends State<LoginPage> {
     _loggedIn = true;
 
     try {
-      // WKWebView may not have finished persisting cookies when
-      // onPageFinished fires — give it a moment to settle.
       await Future.delayed(const Duration(seconds: 1));
 
-      // Collect from both sources: native WKHTTPCookieStore + JS document.cookie
+      // Collect from WKWebView native cookie store + JS document.cookie
       String nativeCookies = '';
       String jsCookies = '';
       try {
@@ -211,7 +209,7 @@ class _LoginPageState extends State<LoginPage> {
         jsCookies = await _controller.runJavaScriptReturningResult('document.cookie') as String? ?? '';
       } catch (_) {}
 
-      // Merge and deduplicate by cookie name
+      // Merge and deduplicate
       final merged = <String, String>{};
       for (final src in [nativeCookies, jsCookies]) {
         for (final part in src.split(';')) {
@@ -227,40 +225,67 @@ class _LoginPageState extends State<LoginPage> {
         }
       }
       final cookieStr = merged.entries.map((e) => '${e.key}=${e.value}').join('; ');
-      debugPrint('🍪 Cookies captured: native=${nativeCookies.length} JS=${jsCookies.length} merged=${cookieStr.length}');
 
-      if (cookieStr.isNotEmpty) {
-        final prefs = await SharedPreferences.getInstance();
-        final storeKey = '${widget.baseUrl}|${widget.account}|${widget.cashierJobNumber}';
-        await prefs.setString('cookie_$storeKey', cookieStr);
-
-        // Sync WKWebView cookies → NSHTTPCookieStorage (iOS only).
-        // dart:io HttpClient uses NSURLSession which reads from NSHTTPCookieStorage,
-        // NOT from WKWebsiteDataStore. Without this, requests fail with "login expired".
-        if (Platform.isIOS) {
-          try {
-            const channel = MethodChannel('com.smarteye/cookies');
-            await channel.invokeMethod('syncToShared');
-            debugPrint('🍪 Cookies synced to NSHTTPCookieStorage');
-          } catch (_) {}
-        }
-
-        try {
-          final stores = await StoreService.fetchStores(
-            baseUrl: widget.baseUrl,
-            cookie: cookieStr,
-          );
-          if (stores.isNotEmpty) {
-            await StoreService.saveStores(widget.baseUrl, stores);
-          }
-        } catch (_) {}
-      } else {
-        debugPrint('⚠️ No cookies captured — session may not be established');
+      if (cookieStr.isEmpty) {
+        debugPrint('⚠️ No cookies captured');
+        if (mounted) Navigator.of(context).pop(true);
+        return;
       }
+
+      // Save
+      final prefs = await SharedPreferences.getInstance();
+      final storeKey = '${widget.baseUrl}|${widget.account}|${widget.cashierJobNumber}';
+      await prefs.setString('cookie_$storeKey', cookieStr);
+
+      // iOS: sync WKWebView → NSHTTPCookieStorage
+      if (Platform.isIOS) {
+        try {
+          const channel = MethodChannel('com.smarteye/cookies');
+          await channel.invokeMethod('syncToShared');
+        } catch (_) {}
+      }
+
+      // Validate: test Dart HTTP request with the cookies
+      String validateMsg = '';
+      try {
+        final client = HttpClient();
+        client.connectionTimeout = const Duration(seconds: 8);
+        final req = await client.getUrl(Uri.parse('${widget.baseUrl}/Product/Manage'));
+        req.headers.set('Cookie', cookieStr);
+        req.followRedirects = false;
+        final resp = await req.close();
+        final loc = resp.headers.value('location') ?? '';
+        client.close();
+
+        if (loc.contains('signin') || loc.contains('login')) {
+          validateMsg = '⚠️ Cookie验证失败！服务器重定向到登录页\nCookie长度: ${cookieStr.length}';
+        } else if (resp.statusCode == 200) {
+          validateMsg = '✅ Cookie验证通过';
+        } else {
+          validateMsg = '状态码: ${resp.statusCode} 重定向: $loc';
+        }
+      } catch (e) {
+        validateMsg = '验证异常: $e';
+      }
+
+      // Fetch stores
+      try {
+        final stores = await StoreService.fetchStores(
+          baseUrl: widget.baseUrl,
+          cookie: cookieStr,
+        );
+        if (stores.isNotEmpty) {
+          await StoreService.saveStores(widget.baseUrl, stores);
+        }
+      } catch (_) {}
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('登录成功！门店已同步'), backgroundColor: AppConstants.successColor),
+          SnackBar(
+            content: Text(validateMsg.isEmpty ? '登录成功！' : '登录成功！$validateMsg'),
+            backgroundColor: validateMsg.contains('失败') ? Colors.orange : AppConstants.successColor,
+            duration: Duration(seconds: validateMsg.contains('失败') ? 5 : 2),
+          ),
         );
         Navigator.of(context).pop(true);
       }
