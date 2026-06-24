@@ -149,22 +149,35 @@ class _LoginPageState extends State<LoginPage> {
   // ---- Login success ----
 
   Future<void> _onLoginSuccess() async {
-    if (_loggedIn || _controller == null) return;
+    if (_loggedIn) return;
     _loggedIn = true;
     try {
-      await Future.delayed(const Duration(seconds: 2));
-
-      // Get cookies via CookieManager (respects sharedCookiesEnabled on iOS)
+      // iOS: NSHTTPCookieStorage may need time to sync from sharedCookiesEnabled.
+      // Retry up to 3 times with 2s intervals.
       String cookieStr = '';
-      try {
-        final cookies = await CookieManager.instance().getCookies(url: WebUri(widget.baseUrl));
-        cookieStr = cookies.map((c) => '${c.name}=${c.value}').join('; ');
-      } catch (_) {}
-      if (cookieStr.isEmpty) {
-        try {
-          final js = await _controller!.evaluateJavascript(source: 'document.cookie');
-          cookieStr = (js as String?) ?? '';
-        } catch (_) {}
+      String cookieSource = '';
+      for (int attempt = 0; attempt < 3 && cookieStr.isEmpty; attempt++) {
+        await Future.delayed(const Duration(seconds: 2));
+        if (Platform.isIOS) {
+          try {
+            const ch = MethodChannel('com.smarteye/cookies');
+            cookieStr = await ch.invokeMethod('getCookies', {'url': widget.baseUrl}) as String? ?? '';
+            if (cookieStr.isNotEmpty) cookieSource = 'NSHTTPCookieStorage';
+          } catch (_) {}
+        }
+        if (cookieStr.isEmpty) {
+          try {
+            final cookies = await CookieManager.instance().getCookies(url: WebUri(widget.baseUrl));
+            cookieStr = cookies.map((c) => '${c.name}=${c.value}').join('; ');
+            if (cookieStr.isNotEmpty) cookieSource = 'CookieManager';
+          } catch (_) {}
+        }
+        if (cookieStr.isEmpty) {
+          try {
+            cookieStr = await _controller!.evaluateJavascript(source: 'document.cookie') as String? ?? '';
+            if (cookieStr.isNotEmpty) cookieSource = 'document.cookie';
+          } catch (_) {}
+        }
       }
 
       if (cookieStr.isNotEmpty) {
@@ -175,7 +188,15 @@ class _LoginPageState extends State<LoginPage> {
           if (s.isNotEmpty) await StoreService.saveStores(widget.baseUrl, s);
         } catch (_) {}
       }
-      if (mounted) { Navigator.of(context).pop(true); }
+      if (mounted) {
+        final msg = cookieStr.isEmpty
+            ? '登录成功，但未获取到 Cookie！'
+            : '登录成功（$cookieSource ${cookieStr.length}Byte）';
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(msg), backgroundColor: cookieStr.isEmpty ? Colors.orange : AppConstants.successColor, duration: const Duration(seconds: 4)),
+        );
+        Navigator.of(context).pop(true);
+      }
     } catch (_) { if (mounted) Navigator.of(context).pop(true); }
   }
 

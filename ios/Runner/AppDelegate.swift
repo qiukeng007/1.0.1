@@ -52,10 +52,11 @@ import WebKit
   // MARK: - Cookie helpers
 
   private func getCookies(for url: String, result: @escaping FlutterResult) {
-    // Return ALL cookies from default data store
-    WKWebsiteDataStore.default().httpCookieStore.getAllCookies { cookies in
-      let s = cookies.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
-      result(s)
-    }
+    // Read from NSHTTPCookieStorage (shared with dart:io HttpClient on iOS)
+    // With flutter_inappwebview's sharedCookiesEnabled, WKWebView writes here.
+    guard let siteURL = URL(string: url) else { result(""); return }
+    let cookies = HTTPCookieStorage.shared.cookies(for: siteURL) ?? []
+    let s = cookies.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
+    result(s)
   }
 }
