@@ -6,6 +6,7 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../utils/constants.dart';
 import '../services/store_service.dart';
+import '../services/session_webview.dart';
 
 class LoginPage extends StatefulWidget {
   final String baseUrl;
@@ -188,13 +189,16 @@ class _LoginPageState extends State<LoginPage> {
           if (s.isNotEmpty) await StoreService.saveStores(widget.baseUrl, s);
         } catch (_) {}
       }
+      // iOS: keep WebView alive for session (cookies not accessible from dart:io)
+      if (Platform.isIOS && _controller != null) {
+        SessionWebView.instance.setController(_controller!);
+      }
+
       if (mounted) {
-        final msg = cookieStr.isEmpty
-            ? '登录成功，但未获取到 Cookie！'
-            : '登录成功（$cookieSource ${cookieStr.length}Byte）';
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(msg), backgroundColor: cookieStr.isEmpty ? Colors.orange : AppConstants.successColor, duration: const Duration(seconds: 4)),
-        );
+        final msg = cookieStr.isNotEmpty
+            ? '登录成功，已保存会话'
+            : '登录成功（iOS将持续验证）';
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg), backgroundColor: AppConstants.successColor, duration: const Duration(seconds: 2)));
         Navigator.of(context).pop(true);
       }
     } catch (_) { if (mounted) Navigator.of(context).pop(true); }
