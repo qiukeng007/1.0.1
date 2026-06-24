@@ -72,7 +72,6 @@ import AVFoundation
   // MARK: - Audio Recording
 
   private func startRecording(path: String, result: @escaping FlutterResult) {
-    // Check microphone permission
     switch AVAudioSession.sharedInstance().recordPermission {
     case .denied:
       result(FlutterError(code: "PERMISSION_DENIED", message: "麦克风权限被拒绝", details: nil))
@@ -80,11 +79,9 @@ import AVFoundation
     case .undetermined:
       AVAudioSession.sharedInstance().requestRecordPermission { granted in
         DispatchQueue.main.async {
-          if granted {
-            self.startRecording(path: path, result: result)
-          } else {
-            result(FlutterError(code: "PERMISSION_DENIED", message: "麦克风权限被拒绝", details: nil))
-          }
+          granted
+            ? self.startRecording(path: path, result: result)
+            : result(FlutterError(code: "PERMISSION_DENIED", message: "麦克风权限被拒绝", details: nil))
         }
       }
       return
@@ -93,54 +90,60 @@ import AVFoundation
     }
 
     do {
-      let session = AVAudioSession.sharedInstance()
-      try session.setCategory(.record, mode: .measurement, options: [])
-      try session.setActive(true)
+      try AVAudioSession.sharedInstance().setCategory(.record, mode: .default, options: [])
+      try AVAudioSession.sharedInstance().setActive(true)
 
-      audioEngine = AVAudioEngine()
-      guard let engine = audioEngine else {
-        result(FlutterError(code: "ENGINE_ERROR", message: "Failed to create audio engine", details: nil))
-        return
-      }
-
+      let engine = AVAudioEngine()
+      audioEngine = engine
       let inputNode = engine.inputNode
-      let inputFormat = inputNode.outputFormat(forBus: 0)
+      let nativeFormat = inputNode.outputFormat(forBus: 0) // device native (e.g. 44100/48000 float32)
 
-      // Convert to 16kHz mono 16-bit PCM (same as Android)
-      guard let converter = AVAudioConverter(from: inputFormat, to: pcmFormat(sampleRate: audioSampleRate)) else {
-        result(FlutterError(code: "CONVERTER_ERROR", message: "Failed to create audio converter", details: nil))
-        return
-      }
-
-      // Prepare WAV file
+      // Prepare output file — write placeholder header, append PCM
       let fileURL = URL(fileURLWithPath: path)
-      // Write placeholder WAV header (will be updated on stop)
       try Data(count: 44).write(to: fileURL)
       audioFileHandle = try FileHandle(forWritingTo: fileURL)
       audioFileHandle?.seek(toFileOffset: 44)
       audioDataSize = 0
 
-      inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
-        guard let self = self else { return }
-        let targetCapacity = Int(Double(buffer.frameLength) * (self.audioSampleRate / inputFormat.sampleRate))
-        guard let converted = AVAudioPCMBuffer(
-          pcmFormat: self.pcmFormat(sampleRate: self.audioSampleRate),
-          frameCapacity: AVAudioFrameCount(targetCapacity)
-        ) else { return }
+      // Install tap at device native rate; downsample + float→int16 manually
+      let dstRate = audioSampleRate
+      let srcRate = nativeFormat.sampleRate
 
-        var error: NSError?
-        converter.convert(to: converted, error: &error) { _, _ in
-          buffer
+      inputNode.installTap(onBus: 0, bufferSize: 1024, format: nativeFormat) { [weak self] buffer, _ in
+        guard let self = self,
+              let handle = self.audioFileHandle,
+              let floatData = buffer.floatChannelData else { return }
+
+        let frameLen = Int(buffer.frameLength)
+        let ratio = dstRate / srcRate
+        let outLen = Int(Double(frameLen) * ratio)
+        var samples = [Int16](repeating: 0, count: outLen)
+
+        for i in 0..<outLen {
+          let srcIdx = Double(i) / ratio
+          let srcFrame = Int(srcIdx)
+          let frac = Float(srcIdx - Double(srcFrame))
+          let a: Float, b: Float
+          if srcFrame + 1 < frameLen {
+            a = floatData.pointee[srcFrame]
+            b = floatData.pointee[srcFrame + 1]
+          } else if srcFrame < frameLen {
+            a = floatData.pointee[srcFrame]
+            b = a
+          } else {
+            a = 0; b = 0
+          }
+          let val = a + (b - a) * frac
+          samples[i] = Int16(max(-32768, min(32767, val * 32767)))
         }
-        if error != nil { return }
 
-        guard let channelData = converted.int16ChannelData else { return }
-        let frames = Int(converted.frameLength)
-        let data = Data(bytes: channelData.pointee, count: frames * 2) // 16-bit = 2 bytes
-        self.audioFileHandle?.write(data)
-        self.audioDataSize += data.count
+        samples.withUnsafeBytes { ptr in
+          handle.write(Data(ptr))
+        }
+        self.audioDataSize += outLen * 2
       }
 
+      engine.prepare()
       try engine.start()
       result(true)
 
@@ -154,43 +157,30 @@ import AVFoundation
     audioEngine?.stop()
     audioEngine = nil
 
-    // Finalize WAV file: write RIFF header
     if let handle = audioFileHandle {
-      let totalDataLen = audioDataSize + 36
+      let totalLen = audioDataSize + 36
       let byteRate = Int(audioSampleRate) * 2
-
       handle.seek(toFileOffset: 0)
       handle.write("RIFF".data(using: .ascii)!)
-      handle.write(intLE(totalDataLen))
+      handle.write(intLE(totalLen))
       handle.write("WAVE".data(using: .ascii)!)
       handle.write("fmt ".data(using: .ascii)!)
-      handle.write(intLE(16))          // fmt chunk size
-      handle.write(shortLE(1))         // PCM
-      handle.write(shortLE(1))         // mono
+      handle.write(intLE(16))
+      handle.write(shortLE(1))
+      handle.write(shortLE(1))
       handle.write(intLE(Int(audioSampleRate)))
       handle.write(intLE(byteRate))
-      handle.write(shortLE(2))         // block align
-      handle.write(shortLE(16))        // bits per sample
+      handle.write(shortLE(2))
+      handle.write(shortLE(16))
       handle.write("data".data(using: .ascii)!)
       handle.write(intLE(audioDataSize))
-
       handle.closeFile()
       audioFileHandle = nil
       audioDataSize = 0
     }
 
-    // Deactivate audio session
     try? AVAudioSession.sharedInstance().setActive(false)
     result(nil)
-  }
-
-  private func pcmFormat(sampleRate: Double) -> AVAudioFormat {
-    return AVAudioFormat(
-      commonFormat: .pcmFormatInt16,
-      sampleRate: sampleRate,
-      channels: 1,
-      interleaved: false
-    )!
   }
 
   // MARK: - Audio Playback (beep)
