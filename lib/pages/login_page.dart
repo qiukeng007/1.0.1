@@ -1,5 +1,6 @@
 import 'dart:async';
-import 'dart:io' show HttpClient, Platform;
+import 'dart:convert';
+import 'dart:io' show Platform, HttpClient, HttpClientResponse, HttpHeaders;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -26,325 +27,277 @@ class LoginPage extends StatefulWidget {
 }
 
 class _LoginPageState extends State<LoginPage> {
+  // ── Android: WebView login ──
   late final WebViewController _controller;
-  bool _loading = true;
-  bool _formReady = false;
-  bool _loggedIn = false;
+  bool _webLoading = true;
+  bool _webLoggedIn = false;
   Timer? _pollTimer;
-  Timer? _urlPollTimer;
 
-  static String get _userAgent {
-    if (Platform.isIOS) {
-      return 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
-    }
-    return 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
-  }
+  // ── iOS: direct HTTP login ──
+  String _iosStatus = '';
+  bool _iosError = false;
+
+  static const _httpUa =
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36';
+  static const _webUa =
+      'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36';
 
   @override
   void initState() {
     super.initState();
+    if (Platform.isIOS) {
+      // iOS: try fast HTTP login first. If server requires WeChat (re-enabled
+      // later), auto-fallback to WebView so the user can scan the QR code.
+      _doHttpLogin();
+    } else {
+      _initWebView();
+    }
+  }
+
+  /// Switch to WebView login on iOS (when HTTP login detects WeChat required).
+  void _fallbackToWebView() {
+    setState(() {
+      _iosStatus = '';
+      _iosError = false;
+    });
+    _initWebView();
+  }
+
+  // ═══════════════════════════════════════════════
+  //  iOS: direct HTTP login (no WebView)
+  // ═══════════════════════════════════════════════
+
+  Future<void> _doHttpLogin() async {
+    final baseUrl = widget.baseUrl.replaceAll(RegExp(r'/$'), '');
+    final account = widget.account.trim();
+    final jobNumber = widget.cashierJobNumber.trim();
+    final password = widget.password.trim();
+
+    if (account.isEmpty || jobNumber.isEmpty || password.isEmpty) {
+      _iosError = true;
+      setState(() => _iosStatus = '请填写门店账号、员工工号和工号密码');
+      return;
+    }
+
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 15);
+    try {
+      // Step 1: GET signin page
+      setState(() => _iosStatus = '正在打开登录页…');
+      final signinUri = Uri.parse('$baseUrl/account/signin?ReturnUrl=%2fProduct%2fManage');
+      final r1 = await client.getUrl(signinUri);
+      r1.headers.set('User-Agent', _httpUa);
+      r1.followRedirects = false;
+      final resp1 = await r1.close().timeout(const Duration(seconds: 15));
+      await _drain(resp1);
+      if (resp1.statusCode >= 400) { _fail('无法打开登录页 (${resp1.statusCode})'); return; }
+      String cookie = _merge('', resp1.headers);
+
+      // Step 2: POST login
+      setState(() => _iosStatus = '正在登录…');
+      final r2 = await client.postUrl(Uri.parse('$baseUrl/account/SignIn'));
+      r2.headers.set('User-Agent', _httpUa);
+      r2.headers.set('Accept', 'application/json, text/javascript, */*');
+      r2.headers.set('Referer', signinUri.toString());
+      r2.headers.set('Origin', baseUrl);
+      r2.headers.set('Content-Type', 'application/x-www-form-urlencoded; charset=UTF-8');
+      r2.headers.set('X-Requested-With', 'XMLHttpRequest');
+      if (cookie.isNotEmpty) r2.headers.set('Cookie', cookie);
+      r2.followRedirects = false;
+      r2.write('userName=${Uri.encodeComponent('$account:$jobNumber')}&password=${Uri.encodeComponent(password)}&returnUrl=%2fProduct%2fManage&screenSize=1080*1920&employeeSignin=true');
+      final resp2 = await r2.close().timeout(const Duration(seconds: 15));
+      final body2 = await _read(resp2);
+      cookie = _merge(cookie, resp2.headers);
+
+      // Step 3: Parse
+      String? redirectUrl;
+      try {
+        final j = jsonDecode(body2) as Map<String, dynamic>;
+        if (j['successed'] != true) { final msg = j['msg'] as String? ?? ''; if (msg.contains('微信') || msg.contains('扫码') || msg.contains('wechat')) { _fallbackToWebView(); } else { _fail('登录失败：${msg.isNotEmpty ? msg : "未知错误"}'); } return; }
+        redirectUrl = j['msg'] as String?;
+        if (redirectUrl == null || redirectUrl.isEmpty) { _fail('服务器未返回重定向'); return; }
+      } catch (_) { _fail('无法解析服务器响应'); return; }
+
+      // Step 4: Follow redirect
+      setState(() => _iosStatus = '正在验证…');
+      final redirUri = redirectUrl.startsWith('http')
+          ? Uri.parse(redirectUrl)
+          : Uri.parse('$baseUrl${redirectUrl.startsWith('/') ? '' : '/'}$redirectUrl');
+      final r3 = await client.getUrl(redirUri);
+      r3.headers.set('User-Agent', _httpUa);
+      r3.headers.set('Cookie', cookie);
+      r3.headers.set('Referer', signinUri.toString());
+      r3.followRedirects = false;
+      final resp3 = await r3.close().timeout(const Duration(seconds: 10));
+      await _drain(resp3);
+      cookie = _merge(cookie, resp3.headers);
+
+      // Step 5: Verify
+      final r4 = await client.getUrl(Uri.parse('$baseUrl/Product/Manage'));
+      r4.headers.set('User-Agent', _httpUa);
+      r4.headers.set('Cookie', cookie);
+      r4.followRedirects = false;
+      final resp4 = await r4.close().timeout(const Duration(seconds: 10));
+      final vBody = await _read(resp4);
+      final vLoc = resp4.headers.value('location') ?? '';
+      if (vLoc.contains('signin') || vLoc.contains('login') ||
+          (vBody.contains('signin') && vBody.contains('form'))) {
+        _fail('验证失败：Cookie 无效'); return;
+      }
+
+      // Save & done
+      final storeKey = '$baseUrl|$account|$jobNumber';
+      await (await SharedPreferences.getInstance()).setString('cookie_$storeKey', cookie);
+      try {
+        final stores = await StoreService.fetchStores(baseUrl: baseUrl, cookie: cookie);
+        if (stores.isNotEmpty) await StoreService.saveStores(baseUrl, stores);
+      } catch (_) {}
+      if (mounted) { Navigator.of(context).pop(true); }
+    } catch (e) { _fail('$e'); }
+    finally { client.close(); }
+  }
+
+  void _fail(String msg) {
+    if (mounted) setState(() { _iosError = true; _iosStatus = msg; });
+  }
+
+  Future<String> _read(HttpClientResponse r) async {
+    final b = <int>[]; await for (final c in r) { b.addAll(c); } return utf8.decode(b);
+  }
+  Future<void> _drain(HttpClientResponse r) async { await _read(r); }
+
+  String _merge(String cur, HttpHeaders h) {
+    final m = <String, String>{};
+    for (final p in cur.split(';')) { final e = p.trim().indexOf('='); if (e > 0) m[p.substring(0, e).trim()] = p.substring(e + 1).trim(); }
+    for (final raw in h['set-cookie'] ?? <String>[]) {
+      final s = raw.indexOf(';'); final nv = s > 0 ? raw.substring(0, s).trim() : raw.trim();
+      final eq = nv.indexOf('=');
+      if (eq > 0) { final nm = nv.substring(0, eq).trim(); if (!RegExp(r'^(path|domain|expires|max-age|secure|httponly|samesite)', caseSensitive: false).hasMatch(nm)) { m[nm] = nv.substring(eq + 1).trim(); } }
+    }
+    return m.entries.map((e) => '${e.key}=${e.value}').join('; ');
+  }
+
+  // ═══════════════════════════════════════════════
+  //  Android: WebView login (unchanged)
+  // ═══════════════════════════════════════════════
+
+  void _initWebView() {
     _controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setUserAgent(_userAgent)
+      ..setUserAgent(_webUa)
       ..setNavigationDelegate(NavigationDelegate(
-        onNavigationRequest: (request) {
-          debugPrint('🔀 WebView nav: ${request.url}');
-          return NavigationDecision.navigate;
-        },
+        onNavigationRequest: (request) => NavigationDecision.navigate,
         onPageFinished: (url) {
-          setState(() => _loading = false);
-          debugPrint('📄 Page finished: $url');
-
-          // Success: redirected to target page
+          setState(() => _webLoading = false);
           if (url.contains('/Product/Manage') || url.contains('/Home')) {
             _stopPolling();
-            _onLoginSuccess();
-            return;
-          }
-
-          // On signin/login page — inject auto-fill
-          if (url.contains('signin') || url.contains('login') || url.contains('account')) {
+            _onWebLoginSuccess();
+          } else if (url.contains('signin') || url.contains('login') || url.contains('account')) {
             _injectAutoFill();
-            if (!_formReady) {
-              _formReady = true;
-              Future.delayed(const Duration(seconds: 5), () {
-                if (mounted && !_loggedIn) _startPolling();
-              });
-            }
+            Future.delayed(const Duration(seconds: 10), () {
+              if (mounted && !_webLoggedIn) _startPolling();
+            });
           }
-        },
-        onWebResourceError: (error) {
-          debugPrint('❌ WebView error: ${error.description}');
         },
       ))
-      ..loadRequest(Uri.parse(
-        '${widget.baseUrl}/account/signin?ReturnUrl=%2fProduct%2fManage',
-      ));
+      ..loadRequest(Uri.parse('${widget.baseUrl}/account/signin?ReturnUrl=%2fProduct%2fManage'));
   }
-
-  // ---- Polling ----
 
   void _startPolling() {
-    // Check cookies every 4s
     _pollTimer?.cancel();
     _pollTimer = Timer.periodic(const Duration(seconds: 4), (_) async {
-      if (_loggedIn) return;
+      if (_webLoggedIn) return;
       try {
         const channel = MethodChannel('com.smarteye/cookies');
-        final cookieStr = await channel.invokeMethod('getCookies', {
-          'url': widget.baseUrl,
-        }) as String? ?? '';
-        if (cookieStr.isNotEmpty) {
-          _stopPolling();
-          _onLoginSuccess();
-        }
-      } catch (_) {}
-    });
-
-    // Check URL every 3s
-    _urlPollTimer?.cancel();
-    _urlPollTimer = Timer.periodic(const Duration(seconds: 3), (_) async {
-      if (_loggedIn) return;
-      try {
-        final currentUrl = await _controller.currentUrl();
-        if (currentUrl != null && (currentUrl.contains('/Product/Manage') || currentUrl.contains('/Home'))) {
-          _stopPolling();
-          _onLoginSuccess();
-        }
+        final c = await channel.invokeMethod('getCookies', {'url': widget.baseUrl}) as String? ?? '';
+        if (c.isNotEmpty) { _stopPolling(); _onWebLoginSuccess(); }
       } catch (_) {}
     });
   }
 
-  void _stopPolling() {
-    _pollTimer?.cancel();
-    _pollTimer = null;
-    _urlPollTimer?.cancel();
-    _urlPollTimer = null;
-  }
-
-  @override
-  void dispose() {
-    _stopPolling();
-    super.dispose();
-  }
-
-  // ---- Form auto-fill ----
+  void _stopPolling() { _pollTimer?.cancel(); _pollTimer = null; }
 
   Future<void> _injectAutoFill() async {
-    if (_loggedIn) return;
-
+    if (_webLoggedIn) return;
     await _controller.runJavaScript('''
-      (function() {
-        // Switch to employee login tab
-        var empTab = document.querySelector('span[data-type="2"]');
-        if (empTab) empTab.click();
-
-        setTimeout(function() {
-          // Fill employee number
-          var jobInput = document.getElementById('txt_cashierJobName');
-          if (jobInput) {
-            jobInput.value = '${widget.cashierJobNumber}';
-            jobInput.dispatchEvent(new Event('input', { bubbles: true }));
-            jobInput.dispatchEvent(new Event('change', { bubbles: true }));
-          }
-
-          // Fill password
-          var pwInputs = document.querySelectorAll('input[type="password"]');
-          for (var i = 0; i < pwInputs.length; i++) {
-            pwInputs[i].value = '${widget.password}';
-            pwInputs[i].dispatchEvent(new Event('input', { bubbles: true }));
-            pwInputs[i].dispatchEvent(new Event('change', { bubbles: true }));
-          }
-
-          // Fill account
-          var accInput = document.getElementById('txt_userName') || document.querySelector('input[placeholder*="账号"]');
-          if (accInput) {
-            accInput.value = '${widget.account}';
-            accInput.dispatchEvent(new Event('input', { bubbles: true }));
-            accInput.dispatchEvent(new Event('change', { bubbles: true }));
-          }
-
-          // Click submit
-          setTimeout(function() {
-            var btn = document.querySelector('button[type="submit"]')
-              || document.querySelector('input[type="submit"]')
-              || document.querySelector('button.btn-primary')
-              || document.querySelector('a.btn-primary')
-              || document.querySelector('button[class*="login"]')
-              || document.querySelector('button[class*="submit"]')
-              || document.querySelector('a[class*="login"]');
-            if (btn) {
-              btn.click();
-            } else {
-              var forms = document.querySelectorAll('form');
-              for (var f = 0; f < forms.length; f++) {
-                try { forms[f].submit(); } catch(e) {}
-              }
-            }
-          }, 400);
-        }, 500);
+      (function(){
+        var emp=document.querySelector('span[data-type="2"]');if(emp)emp.click();
+        setTimeout(function(){
+          var j=document.getElementById('txt_cashierJobName');if(j){j.value='${widget.cashierJobNumber}';j.dispatchEvent(new Event('input',{bubbles:true}));j.dispatchEvent(new Event('change',{bubbles:true}));}
+          var pw=document.querySelectorAll('input[type="password"]');for(var i=0;i<pw.length;i++){pw[i].value='${widget.password}';pw[i].dispatchEvent(new Event('input',{bubbles:true}));pw[i].dispatchEvent(new Event('change',{bubbles:true}));}
+          var a=document.getElementById('txt_userName')||document.querySelector('input[placeholder*="账号"]');if(a){a.value='${widget.account}';a.dispatchEvent(new Event('input',{bubbles:true}));a.dispatchEvent(new Event('change',{bubbles:true}));}
+          setTimeout(function(){
+            var btn=document.querySelector('button[type="submit"]')||document.querySelector('input[type="submit"]')||document.querySelector('button.btn-primary')||document.querySelector('a.btn-primary')||document.querySelector('button[class*="login"]')||document.querySelector('button[class*="submit"]')||document.querySelector('a[class*="login"]');
+            if(btn)btn.click();
+            else{var fs=document.querySelectorAll('form');for(var f=0;f<fs.length;f++)try{fs[f].submit()}catch(e){}}
+          },400);
+        },500);
       })();
     ''');
   }
 
-  // ---- Login success ----
-
-  Future<void> _onLoginSuccess() async {
-    if (_loggedIn) return;
-    _loggedIn = true;
-
+  Future<void> _onWebLoginSuccess() async {
+    if (_webLoggedIn) return;
+    _webLoggedIn = true;
     try {
-      // Give WKWebView time to flush cookies to disk (they may still be in memory)
-      await Future.delayed(const Duration(seconds: 3));
-
-      // Collect from WKWebView native cookie store + JS document.cookie
-      String nativeCookies = '';
-      String jsCookies = '';
-      try {
-        const channel = MethodChannel('com.smarteye/cookies');
-        nativeCookies = await channel.invokeMethod('getCookies', {
-          'url': widget.baseUrl,
-        }) as String? ?? '';
-      } catch (_) {}
-      try {
-        jsCookies = await _controller.runJavaScriptReturningResult('document.cookie') as String? ?? '';
-      } catch (_) {}
-
-      // Merge and deduplicate
-      final merged = <String, String>{};
-      for (final src in [nativeCookies, jsCookies]) {
-        for (final part in src.split(';')) {
-          final trimmed = part.trim();
-          final eq = trimmed.indexOf('=');
-          if (eq > 0) {
-            final name = trimmed.substring(0, eq).trim();
-            final value = trimmed.substring(eq + 1).trim();
-            if (name.isNotEmpty && value.isNotEmpty) {
-              merged[name] = value;
-            }
-          }
-        }
+      String c = '';
+      try { const ch = MethodChannel('com.smarteye/cookies'); c = await ch.invokeMethod('getCookies', {'url': widget.baseUrl}) as String? ?? ''; } catch (_) {}
+      if (c.isEmpty) try { c = await _controller.runJavaScriptReturningResult('document.cookie') as String? ?? ''; } catch (_) {}
+      if (c.isNotEmpty) {
+        final p = await SharedPreferences.getInstance();
+        await p.setString('cookie_${widget.baseUrl}|${widget.account}|${widget.cashierJobNumber}', c);
+        try { final s = await StoreService.fetchStores(baseUrl: widget.baseUrl, cookie: c); if (s.isNotEmpty) await StoreService.saveStores(widget.baseUrl, s); } catch (_) {}
       }
-      final cookieStr = merged.entries.map((e) => '${e.key}=${e.value}').join('; ');
-
-      if (cookieStr.isEmpty) {
-        debugPrint('⚠️ No cookies captured');
-        if (mounted) Navigator.of(context).pop(true);
-        return;
-      }
-
-      // Save
-      final prefs = await SharedPreferences.getInstance();
-      final storeKey = '${widget.baseUrl}|${widget.account}|${widget.cashierJobNumber}';
-      await prefs.setString('cookie_$storeKey', cookieStr);
-
-      // iOS: sync WKWebView → NSHTTPCookieStorage
-      int syncedCount = 0;
-      if (Platform.isIOS) {
-        try {
-          const channel = MethodChannel('com.smarteye/cookies');
-          final count = await channel.invokeMethod('syncToShared');
-          syncedCount = (count is int) ? count : 0;
-        } catch (_) {}
-      }
-
-      // Check what WebView actually has — are there cookies? Session in URL?
-      String webViewCookie = '';
-      String webViewUrl = '';
-      try {
-        webViewCookie = await _controller.runJavaScriptReturningResult('document.cookie') as String? ?? '';
-        webViewUrl = await _controller.currentUrl() ?? '';
-      } catch (_) {}
-
-      final urlContainsSession = webViewUrl.contains('(S(') || webViewUrl.contains('session');
-      debugPrint('🔍 WebView URL: $webViewUrl');
-      debugPrint('🔍 WebView document.cookie: "$webViewCookie"');
-
-      // Validate: use JS document.cookie directly (bypass native cookie store issues)
-      String validateMsg = '';
-      if (webViewCookie.isNotEmpty) {
-        try {
-          final client = HttpClient();
-          client.connectionTimeout = const Duration(seconds: 8);
-          final req = await client.getUrl(Uri.parse('${widget.baseUrl}/Product/Manage'));
-          req.headers.set('Cookie', webViewCookie); // use JS cookies directly
-          req.followRedirects = false;
-          final resp = await req.close();
-          final loc = resp.headers.value('location') ?? '';
-          client.close();
-
-          if (loc.contains('signin') || loc.contains('login')) {
-            validateMsg = 'JS-Cookie ${webViewCookie.length}Byte 重定向登录页 (缺HttpOnly会话)';
-          } else if (resp.statusCode == 200) {
-            validateMsg = '✅ 验证通过！可正常使用';
-          } else {
-            validateMsg = '状态:${resp.statusCode}';
-          }
-        } catch (e) {
-          validateMsg = '异常:$e';
-        }
-      } else {
-        validateMsg = 'WebView JS Cookie为空';
-      }
-
-      // Fetch stores
-      try {
-        final stores = await StoreService.fetchStores(
-          baseUrl: widget.baseUrl,
-          cookie: cookieStr,
-        );
-        if (stores.isNotEmpty) {
-          await StoreService.saveStores(widget.baseUrl, stores);
-        }
-      } catch (_) {}
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(validateMsg.isEmpty ? '登录成功！' : '登录成功！$validateMsg'),
-            backgroundColor: validateMsg.contains('失败') ? Colors.orange : AppConstants.successColor,
-            duration: Duration(seconds: validateMsg.contains('失败') ? 5 : 2),
-          ),
-        );
-        Navigator.of(context).pop(true);
-      }
-    } catch (_) {
-      if (mounted) Navigator.of(context).pop(true);
-    }
+      if (mounted) { Navigator.of(context).pop(true); }
+    } catch (_) { if (mounted) Navigator.of(context).pop(true); }
   }
 
   @override
+  void dispose() { _stopPolling(); super.dispose(); }
+
+  @override
   Widget build(BuildContext context) {
+    if (Platform.isIOS) {
+      // Show WebView when HTTP login fell back (WeChat required)
+      if (_iosStatus.isEmpty) {
+        return Scaffold(
+          backgroundColor: AppConstants.bgColor,
+          appBar: AppBar(title: const Text('微信扫码登录', style: TextStyle(fontSize: 16))),
+          body: Expanded(child: WebViewWidget(controller: _controller)),
+        );
+      }
+      return Scaffold(
+        backgroundColor: AppConstants.bgColor,
+        appBar: AppBar(title: const Text('员工登录', style: TextStyle(fontSize: 16))),
+        body: Center(
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            if (!_iosError) ...[
+              const SizedBox(width: 48, height: 48, child: CircularProgressIndicator(strokeWidth: 3)),
+              const SizedBox(height: 24),
+            ] else ...[
+              const Icon(Icons.error_outline, size: 48, color: Colors.red),
+              const SizedBox(height: 24),
+            ],
+            Text(_iosStatus, style: TextStyle(fontSize: 15, color: _iosError ? Colors.red : AppConstants.textSecondary)),
+            if (_iosError) ...[
+              const SizedBox(height: 24),
+              ElevatedButton(onPressed: () => Navigator.pop(context), child: const Text('返回')),
+            ],
+          ]),
+        ),
+      );
+    }
+
+    // Android: WebView
     return Scaffold(
       backgroundColor: AppConstants.bgColor,
       appBar: AppBar(
-        title: const Text('员工登录', style: TextStyle(fontSize: 16)),
+        title: const Text('微信扫码登录', style: TextStyle(fontSize: 16)),
         actions: [
-          if (_loading)
-            const Padding(
-              padding: EdgeInsets.only(right: 16),
-              child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)),
-            ),
+          if (_webLoading)
+            const Padding(padding: EdgeInsets.only(right: 16), child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))),
         ],
       ),
-      body: Column(
-        children: [
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(14),
-            color: AppConstants.primaryColor.withValues(alpha: 0.05),
-            child: Column(
-              children: [
-                if (!_formReady)
-                  const Text('⏳ 正在加载登录页…', style: TextStyle(fontSize: 13, color: AppConstants.textSecondary))
-                else
-                  const Text('🔐 正在自动填写并提交登录…', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: AppConstants.primaryColor)),
-              ],
-            ),
-          ),
-          Expanded(child: WebViewWidget(controller: _controller)),
-        ],
-      ),
+      body: Expanded(child: WebViewWidget(controller: _controller)),
     );
   }
 }
