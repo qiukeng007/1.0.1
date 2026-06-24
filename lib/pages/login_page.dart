@@ -239,6 +239,7 @@ class _LoginPageState extends State<LoginPage> {
         // NOT from WKWebsiteDataStore. Without this, requests fail with "login expired".
         if (Platform.isIOS) {
           try {
+            const channel = MethodChannel('com.smarteye/cookies');
             await channel.invokeMethod('syncToShared');
             debugPrint('🍪 Cookies synced to NSHTTPCookieStorage');
           } catch (_) {}
