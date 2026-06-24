@@ -238,34 +238,37 @@ class _LoginPageState extends State<LoginPage> {
       await prefs.setString('cookie_$storeKey', cookieStr);
 
       // iOS: sync WKWebView → NSHTTPCookieStorage
+      int syncedCount = 0;
       if (Platform.isIOS) {
         try {
           const channel = MethodChannel('com.smarteye/cookies');
-          await channel.invokeMethod('syncToShared');
+          final count = await channel.invokeMethod('syncToShared');
+          syncedCount = (count is int) ? count : 0;
         } catch (_) {}
       }
 
-      // Validate: test Dart HTTP request with the cookies
+      // Validate WITHOUT manual Cookie header — let NSURLSession use
+      // the synced NSHTTPCookieStorage cookies automatically.
       String validateMsg = '';
       try {
         final client = HttpClient();
         client.connectionTimeout = const Duration(seconds: 8);
         final req = await client.getUrl(Uri.parse('${widget.baseUrl}/Product/Manage'));
-        req.headers.set('Cookie', cookieStr);
+        // DON'T set Cookie header — use synced NSHTTPCookieStorage
         req.followRedirects = false;
         final resp = await req.close();
         final loc = resp.headers.value('location') ?? '';
         client.close();
 
         if (loc.contains('signin') || loc.contains('login')) {
-          validateMsg = '⚠️ Cookie验证失败！服务器重定向到登录页\nCookie长度: ${cookieStr.length}';
+          validateMsg = '⚠️ Cookie验证失败！同步${syncedCount}个，重定向到登录页';
         } else if (resp.statusCode == 200) {
-          validateMsg = '✅ Cookie验证通过';
+          validateMsg = '✅ Cookie验证通过 (同步${syncedCount}个)';
         } else {
-          validateMsg = '状态码: ${resp.statusCode} 重定向: $loc';
+          validateMsg = '状态:${resp.statusCode} 同步:${syncedCount}';
         }
       } catch (e) {
-        validateMsg = '验证异常: $e';
+        validateMsg = '异常:$e 同步:${syncedCount}';
       }
 
       // Fetch stores
