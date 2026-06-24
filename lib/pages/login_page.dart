@@ -58,9 +58,11 @@ class _LoginPageState extends State<LoginPage> {
       return;
     }
 
-    // Fix 2: stuck on LoginByWx intermediate page
-    if (u.contains('LoginByWx=true')) {
-      debugPrint('🔄 stuck at LoginByWx, forcing /Product/Manage');
+    // Fix 2: stuck on LoginByWx AFTER WeChat callback confirmed.
+    // Only trigger if UserLoginByWx was already seen (callback happened).
+    // LoginByWx=true also appears on the initial QR page — don't force-navigate then.
+    if (_wxCallbackSeen && u.contains('LoginByWx=true')) {
+      debugPrint('🔄 wx callback seen + stuck at LoginByWx, forcing /Product/Manage');
       _stopPolling();
       Future.delayed(const Duration(milliseconds: 500), () {
         if (!_loggedIn) ctrl.loadUrl(urlRequest: URLRequest(url: WebUri('${widget.baseUrl}/Product/Manage')));
@@ -106,13 +108,17 @@ class _LoginPageState extends State<LoginPage> {
 
   void _startPolling() {
     _pollTimer?.cancel();
-    _pollTimer = Timer.periodic(const Duration(seconds: 4), (_) async {
-      if (_loggedIn) return;
-      try {
-        final cookies = await CookieManager.instance().getCookies(url: WebUri(widget.baseUrl));
-        if (cookies.isNotEmpty) { _stopPolling(); _onLoginSuccess(); }
-      } catch (_) {}
-    });
+    // iOS: skip cookie polling — signin page cookies trigger false positives.
+    // Only use URL-based detection (Product/Manage redirect).
+    if (!Platform.isIOS) {
+      _pollTimer = Timer.periodic(const Duration(seconds: 4), (_) async {
+        if (_loggedIn) return;
+        try {
+          final cookies = await CookieManager.instance().getCookies(url: WebUri(widget.baseUrl));
+          if (cookies.isNotEmpty) { _stopPolling(); _onLoginSuccess(); }
+        } catch (_) {}
+      });
+    }
     _urlTimer?.cancel();
     _urlTimer = Timer.periodic(const Duration(seconds: 3), (_) async {
       if (_loggedIn || _controller == null) return;
