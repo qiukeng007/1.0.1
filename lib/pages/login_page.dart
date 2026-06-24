@@ -247,28 +247,39 @@ class _LoginPageState extends State<LoginPage> {
         } catch (_) {}
       }
 
-      // Validate WITHOUT manual Cookie header — let NSURLSession use
-      // the synced NSHTTPCookieStorage cookies automatically.
+      // Check what WebView actually has — are there cookies? Session in URL?
+      String webViewCookie = '';
+      String webViewUrl = '';
+      try {
+        webViewCookie = await _controller.runJavaScriptReturningResult('document.cookie') as String? ?? '';
+        webViewUrl = await _controller.currentUrl() ?? '';
+      } catch (_) {}
+
+      final urlContainsSession = webViewUrl.contains('(S(') || webViewUrl.contains('session');
+      debugPrint('🔍 WebView URL: $webViewUrl');
+      debugPrint('🔍 WebView document.cookie: "$webViewCookie"');
+
+      // Validate
       String validateMsg = '';
       try {
         final client = HttpClient();
         client.connectionTimeout = const Duration(seconds: 8);
         final req = await client.getUrl(Uri.parse('${widget.baseUrl}/Product/Manage'));
-        // DON'T set Cookie header — use synced NSHTTPCookieStorage
+        req.headers.set('Cookie', cookieStr);
         req.followRedirects = false;
         final resp = await req.close();
         final loc = resp.headers.value('location') ?? '';
         client.close();
 
         if (loc.contains('signin') || loc.contains('login')) {
-          validateMsg = '⚠️ Cookie验证失败！同步${syncedCount}个，重定向到登录页';
+          validateMsg = 'URL会话:${urlContainsSession ? "是" : "否"} Cookie:${webViewCookie.length}Byte 同步:${syncedCount}个';
         } else if (resp.statusCode == 200) {
-          validateMsg = '✅ Cookie验证通过 (同步${syncedCount}个)';
+          validateMsg = '✅ 验证通过';
         } else {
-          validateMsg = '状态:${resp.statusCode} 同步:${syncedCount}';
+          validateMsg = '状态:${resp.statusCode}';
         }
       } catch (e) {
-        validateMsg = '异常:$e 同步:${syncedCount}';
+        validateMsg = '异常:$e';
       }
 
       // Fetch stores
