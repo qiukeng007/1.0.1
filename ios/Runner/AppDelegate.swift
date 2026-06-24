@@ -1,18 +1,28 @@
 import Flutter
 import UIKit
 import WebKit
+import AVFoundation
 
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
   private var webViewUserScriptInstalled = false
+
+  // Audio recording state
+  private var audioEngine: AVAudioEngine?
+  private var audioFileHandle: FileHandle?
+  private var audioDataSize: Int = 0
+  private let audioSampleRate: Double = 16000
 
   override func application(
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
     if let controller = window?.rootViewController as? FlutterViewController {
-      let channel = FlutterMethodChannel(name: "com.smarteye/cookies", binaryMessenger: controller.binaryMessenger)
-      channel.setMethodCallHandler { (call, result) in
+      let messenger = controller.binaryMessenger
+
+      // ── Cookie channel ──
+      let cookieChannel = FlutterMethodChannel(name: "com.smarteye/cookies", binaryMessenger: messenger)
+      cookieChannel.setMethodCallHandler { (call, result) in
         if call.method == "getCookies" {
           guard let args = call.arguments as? [String: Any],
                 let url = args["url"] as? String else {
@@ -25,16 +35,186 @@ import WebKit
           result(FlutterMethodNotImplemented)
         }
       }
+
+      // ── Audio recording channel (PCM WAV for offline ASR) ──
+      let audioChannel = FlutterMethodChannel(name: "com.smarteye/audio", binaryMessenger: messenger)
+      audioChannel.setMethodCallHandler { (call, result) in
+        if call.method == "startRecord" {
+          guard let args = call.arguments as? [String: Any],
+                let path = args["path"] as? String else {
+            result(FlutterError(code: "NO_PATH", message: "Missing path", details: nil))
+            return
+          }
+          self.startRecording(path: path, result: result)
+        } else if call.method == "stopRecord" {
+          self.stopRecording(result: result)
+        } else {
+          result(FlutterMethodNotImplemented)
+        }
+      }
+
+      // ── Audio play channel (beep feedback) ──
+      let audioPlayChannel = FlutterMethodChannel(name: "com.smarteye/audio_play", binaryMessenger: messenger)
+      audioPlayChannel.setMethodCallHandler { (call, result) in
+        if call.method == "beep" {
+          let start = (call.arguments as? [String: Any])?["start"] as? Bool ?? true
+          self.playBeep(start: start)
+          result(nil)
+        } else {
+          result(FlutterMethodNotImplemented)
+        }
+      }
     }
 
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 
-  /// Walk the view hierarchy to find WKWebView instances and inject a
-  /// document-start user script that converts window.open() calls into
-  /// direct navigations.  WKWebView's createWebViewWith returns nil by
-  /// default (the plugin does not create popup windows), so window.open
-  /// is silently dropped — this script fixes that at the source.
+  // MARK: - Audio Recording
+
+  private func startRecording(path: String, result: @escaping FlutterResult) {
+    // Check microphone permission
+    switch AVAudioSession.sharedInstance().recordPermission {
+    case .denied:
+      result(FlutterError(code: "PERMISSION_DENIED", message: "麦克风权限被拒绝", details: nil))
+      return
+    case .undetermined:
+      AVAudioSession.sharedInstance().requestRecordPermission { granted in
+        DispatchQueue.main.async {
+          if granted {
+            self.startRecording(path: path, result: result)
+          } else {
+            result(FlutterError(code: "PERMISSION_DENIED", message: "麦克风权限被拒绝", details: nil))
+          }
+        }
+      }
+      return
+    default:
+      break
+    }
+
+    do {
+      let session = AVAudioSession.sharedInstance()
+      try session.setCategory(.record, mode: .measurement, options: [])
+      try session.setActive(true)
+
+      audioEngine = AVAudioEngine()
+      guard let engine = audioEngine else {
+        result(FlutterError(code: "ENGINE_ERROR", message: "Failed to create audio engine", details: nil))
+        return
+      }
+
+      let inputNode = engine.inputNode
+      let inputFormat = inputNode.outputFormat(forBus: 0)
+
+      // Convert to 16kHz mono 16-bit PCM (same as Android)
+      guard let converter = AVAudioConverter(from: inputFormat, to: pcmFormat(sampleRate: audioSampleRate)) else {
+        result(FlutterError(code: "CONVERTER_ERROR", message: "Failed to create audio converter", details: nil))
+        return
+      }
+
+      // Prepare WAV file
+      let fileURL = URL(fileURLWithPath: path)
+      // Write placeholder WAV header (will be updated on stop)
+      try Data(count: 44).write(to: fileURL)
+      audioFileHandle = try FileHandle(forWritingTo: fileURL)
+      audioFileHandle?.seek(toFileOffset: 44)
+      audioDataSize = 0
+
+      inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
+        guard let self = self else { return }
+        let targetCapacity = Int(Double(buffer.frameLength) * (self.audioSampleRate / inputFormat.sampleRate))
+        guard let converted = AVAudioPCMBuffer(
+          pcmFormat: self.pcmFormat(sampleRate: self.audioSampleRate),
+          frameCapacity: AVAudioFrameCount(targetCapacity)
+        ) else { return }
+
+        var error: NSError?
+        converter.convert(to: converted, error: &error) { _, _ in
+          buffer
+        }
+        if error != nil { return }
+
+        guard let channelData = converted.int16ChannelData else { return }
+        let frames = Int(converted.frameLength)
+        let data = Data(bytes: channelData.pointee, count: frames * 2) // 16-bit = 2 bytes
+        self.audioFileHandle?.write(data)
+        self.audioDataSize += data.count
+      }
+
+      try engine.start()
+      result(true)
+
+    } catch {
+      result(FlutterError(code: "RECORD_ERROR", message: error.localizedDescription, details: nil))
+    }
+  }
+
+  private func stopRecording(result: FlutterResult) {
+    audioEngine?.inputNode.removeTap(onBus: 0)
+    audioEngine?.stop()
+    audioEngine = nil
+
+    // Finalize WAV file: write RIFF header
+    if let handle = audioFileHandle {
+      let totalDataLen = audioDataSize + 36
+      let byteRate = Int(audioSampleRate) * 2
+
+      handle.seek(toFileOffset: 0)
+      handle.write("RIFF".data(using: .ascii)!)
+      handle.write(intLE(totalDataLen))
+      handle.write("WAVE".data(using: .ascii)!)
+      handle.write("fmt ".data(using: .ascii)!)
+      handle.write(intLE(16))          // fmt chunk size
+      handle.write(shortLE(1))         // PCM
+      handle.write(shortLE(1))         // mono
+      handle.write(intLE(Int(audioSampleRate)))
+      handle.write(intLE(byteRate))
+      handle.write(shortLE(2))         // block align
+      handle.write(shortLE(16))        // bits per sample
+      handle.write("data".data(using: .ascii)!)
+      handle.write(intLE(audioDataSize))
+
+      handle.closeFile()
+      audioFileHandle = nil
+      audioDataSize = 0
+    }
+
+    // Deactivate audio session
+    try? AVAudioSession.sharedInstance().setActive(false)
+    result(nil)
+  }
+
+  private func pcmFormat(sampleRate: Double) -> AVAudioFormat {
+    return AVAudioFormat(
+      commonFormat: .pcmFormatInt16,
+      sampleRate: sampleRate,
+      channels: 1,
+      interleaved: false
+    )!
+  }
+
+  // MARK: - Audio Playback (beep)
+
+  private func playBeep(start: Bool) {
+    // Use system sound for short beep feedback
+    let soundID: SystemSoundID = start ? 1113 : 1114 // short beep / error beep
+    AudioServicesPlaySystemSound(soundID)
+  }
+
+  // MARK: - WAV helpers
+
+  private func intLE(_ v: Int) -> Data {
+    var val = v
+    return Data(bytes: &val, count: 4)
+  }
+
+  private func shortLE(_ v: Int) -> Data {
+    var val = UInt16(v)
+    return Data(bytes: &val, count: 2)
+  }
+
+  // MARK: - WKUserScript (window.open override)
+
   private func installWindowOpenOverrideIfNeeded() {
     guard !webViewUserScriptInstalled else { return }
     guard let rootView = window?.rootViewController?.view else { return }
@@ -60,7 +240,6 @@ import WebKit
     }
   }
 
-  /// Depth-first search for a WKWebView in the view hierarchy.
   private func findWKWebView(in view: UIView) -> WKWebView? {
     if let webView = view as? WKWebView {
       return webView
@@ -77,12 +256,8 @@ import WebKit
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
   }
 
-  /// Extract ALL cookies matching the target URL's domain from WKWebView's
-  /// shared data store.  Handles HttpOnly cookies that JS document.cookie misses.
-  ///
-  /// Domain matching uses proper suffix comparison so that a cookie scoped to
-  /// `.pospal.cn` matches `beta28.pospal.cn` (the previous implementation
-  /// stripped dots and broke parent-domain matching).
+  // MARK: - Cookie helpers
+
   private func getCookies(for url: String, result: @escaping FlutterResult) {
     guard let siteURL = URL(string: url), let host = siteURL.host else {
       result("")
@@ -93,36 +268,22 @@ import WebKit
       let matched = cookies.filter { cookie in
         self.cookie(cookie, matchesHost: host)
       }
-      // Fallback: if domain matching yields nothing, return ALL cookies so the
-      // Dart side can still pick up the session cookie.
       let chosen = matched.isEmpty ? cookies : matched
       let cookieStr = chosen.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
       result(cookieStr)
     }
   }
 
-  /// Returns true when `cookie`'s domain is a suffix of `host` (including the
-  /// leading dot that marks domain-wide cookies in RFC 6265).
-  ///
-  /// Examples (host = "beta28.pospal.cn"):
-  ///   cookie.domain = ".pospal.cn"         → true   (parent domain)
-  ///   cookie.domain = "beta28.pospal.cn"   → true   (exact)
-  ///   cookie.domain = ".beta28.pospal.cn"  → true   (subdomain scope)
-  ///   cookie.domain = ".other.cn"          → false  (different domain)
   private func cookie(_ cookie: HTTPCookie, matchesHost host: String) -> Bool {
     let domain = cookie.domain
-    // Exact match
     if host == domain { return true }
-    // Domain cookie (leading dot): host is a subdomain, e.g. .pospal.cn matches a.pospal.cn
     if domain.hasPrefix(".") {
       let rootDomain = String(domain.dropFirst())
       if host == rootDomain { return true }
       if host.hasSuffix(domain) { return true }
       return false
     }
-    // Non-dot domain: check if host ends with it (loose match for cookie scoped to subdomain)
     if host.hasSuffix(".\(domain)") || host == domain { return true }
-    // Reverse: domain might be a subdomain of host
     if domain.hasSuffix(".\(host)") { return true }
     return false
   }
