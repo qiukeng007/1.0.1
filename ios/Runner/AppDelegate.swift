@@ -32,6 +32,10 @@ import AudioToolbox
           }
           self.installWindowOpenOverrideIfNeeded()
           self.getCookies(for: url, result: result)
+        } else if call.method == "syncToShared" {
+          // Copy WKWebView cookies → NSHTTPCookieStorage (used by dart:io HttpClient)
+          self.syncCookiesToShared()
+          result(true)
         } else {
           result(FlutterMethodNotImplemented)
         }
@@ -68,6 +72,27 @@ import AudioToolbox
     }
 
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
+  }
+
+  /// Copy WKWebView cookies → NSHTTPCookieStorage.
+  /// dart:io HttpClient uses NSURLSession which reads from NSHTTPCookieStorage,
+  /// NOT from WKWebsiteDataStore. Without this sync, the Dart HTTP client
+  /// won't send the session cookie and the server redirects to signin.
+  private func syncCookiesToShared() {
+    let store = WKWebsiteDataStore.default()
+    store.httpCookieStore.getAllCookies { wkCookies in
+      let shared = HTTPCookieStorage.shared
+      for wkCookie in wkCookies {
+        // Filter out cookies already present (avoid duplicates)
+        if let existing = shared.cookies(for: wkCookie.commentURL ?? URL(string: "https://\(wkCookie.domain)")!) {
+          if existing.contains(where: { $0.name == wkCookie.name && $0.value == wkCookie.value }) {
+            continue
+          }
+        }
+        shared.setCookie(wkCookie)
+      }
+      NSLog("[SmartEye] Synced \(wkCookies.count) cookies to NSHTTPCookieStorage")
+    }
   }
 
   // MARK: - Audio Recording

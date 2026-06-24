@@ -234,6 +234,16 @@ class _LoginPageState extends State<LoginPage> {
         final storeKey = '${widget.baseUrl}|${widget.account}|${widget.cashierJobNumber}';
         await prefs.setString('cookie_$storeKey', cookieStr);
 
+        // Sync WKWebView cookies → NSHTTPCookieStorage (iOS only).
+        // dart:io HttpClient uses NSURLSession which reads from NSHTTPCookieStorage,
+        // NOT from WKWebsiteDataStore. Without this, requests fail with "login expired".
+        if (Platform.isIOS) {
+          try {
+            await channel.invokeMethod('syncToShared');
+            debugPrint('🍪 Cookies synced to NSHTTPCookieStorage');
+          } catch (_) {}
+        }
+
         try {
           final stores = await StoreService.fetchStores(
             baseUrl: widget.baseUrl,
