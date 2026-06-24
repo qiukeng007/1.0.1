@@ -194,7 +194,8 @@ class _LoginPageState extends State<LoginPage> {
     _loggedIn = true;
 
     try {
-      await Future.delayed(const Duration(seconds: 1));
+      // Give WKWebView time to flush cookies to disk (they may still be in memory)
+      await Future.delayed(const Duration(seconds: 3));
 
       // Collect from WKWebView native cookie store + JS document.cookie
       String nativeCookies = '';

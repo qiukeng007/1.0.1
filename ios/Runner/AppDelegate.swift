@@ -115,15 +115,28 @@ import AudioToolbox
   /// Copy WKWebView cookies → NSHTTPCookieStorage synchronously.
   /// Calls completion with the number of cookies synced.
   private func syncCookiesToShared(completion: @escaping (Int) -> Void) {
-    getAllWebViewCookies { wkCookies in
-      let shared = HTTPCookieStorage.shared
-      var synced = 0
-      for cookie in wkCookies {
-        shared.setCookie(cookie)
-        synced += 1
+    DispatchQueue.main.async { [weak self] in
+      guard let self = self else { completion(0); return }
+      let group = DispatchGroup()
+      var all: [HTTPCookie] = []
+
+      group.enter()
+      WKWebsiteDataStore.default().httpCookieStore.getAllCookies { c in
+        all.append(contentsOf: c); group.leave()
       }
-      NSLog("[SmartEye] Synced \(synced) cookies from WebView to NSHTTPCookieStorage")
-      completion(synced)
+      if let root = self.window?.rootViewController?.view {
+        for wv in self.findAllWKWebViews(in: root) {
+          group.enter()
+          wv.configuration.websiteDataStore.httpCookieStore.getAllCookies { c in
+            all.append(contentsOf: c); group.leave()
+          }
+        }
+      }
+      group.notify(queue: .main) {
+        let shared = HTTPCookieStorage.shared
+        for cookie in all { shared.setCookie(cookie) }
+        completion(all.count)
+      }
     }
   }
 
@@ -309,9 +322,29 @@ import AudioToolbox
   // MARK: - Cookie helpers
 
   private func getCookies(for url: String, result: @escaping FlutterResult) {
-    getAllWebViewCookies { cookies in
-      let cookieStr = cookies.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
-      result(cookieStr)
+    DispatchQueue.main.async { [weak self] in
+      guard let self = self else { result(""); return }
+      let group = DispatchGroup()
+      var all: [HTTPCookie] = []
+
+      // 1. Default store
+      group.enter()
+      WKWebsiteDataStore.default().httpCookieStore.getAllCookies { c in
+        all.append(contentsOf: c); group.leave()
+      }
+      // 2. Every WKWebView's own store
+      if let root = self.window?.rootViewController?.view {
+        for wv in self.findAllWKWebViews(in: root) {
+          group.enter()
+          wv.configuration.websiteDataStore.httpCookieStore.getAllCookies { c in
+            all.append(contentsOf: c); group.leave()
+          }
+        }
+      }
+      group.notify(queue: .main) {
+        let s = all.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
+        result(s)
+      }
     }
   }
 }
