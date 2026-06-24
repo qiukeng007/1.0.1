@@ -2,6 +2,7 @@ import Flutter
 import UIKit
 import WebKit
 import AVFoundation
+import AudioToolbox
 
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
@@ -186,15 +187,17 @@ import AVFoundation
   // MARK: - Audio Playback (beep)
 
   private func playBeep(start: Bool) {
-    // Use system sound for short beep feedback
-    let soundID: SystemSoundID = start ? 1113 : 1114 // short beep / error beep
+    // Light haptic feedback (Dart side already triggers HapticFeedback.mediumImpact)
+    // Use a safe system sound that exists on all iOS versions
+    // 1013 = short click, 1104 = tick (both safe)
+    let soundID: SystemSoundID = start ? 1104 : 1104
     AudioServicesPlaySystemSound(soundID)
   }
 
   // MARK: - WAV helpers
 
   private func intLE(_ v: Int) -> Data {
-    var val = v
+    var val = UInt32(v)
     return Data(bytes: &val, count: 4)
   }
 
