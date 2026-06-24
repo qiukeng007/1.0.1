@@ -74,18 +74,27 @@ import AudioToolbox
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 
+  /// Get the WKWebView's actual cookie store (may NOT be `.default()`).
+  private func getWebViewCookieStore() -> WKHTTPCookieStore {
+    if let rootView = window?.rootViewController?.view,
+       let webView = findWKWebView(in: rootView) {
+      return webView.configuration.websiteDataStore.httpCookieStore
+    }
+    return WKWebsiteDataStore.default().httpCookieStore
+  }
+
   /// Copy WKWebView cookies → NSHTTPCookieStorage synchronously.
   /// Calls completion with the number of cookies synced.
   private func syncCookiesToShared(completion: @escaping (Int) -> Void) {
-    let store = WKWebsiteDataStore.default()
-    store.httpCookieStore.getAllCookies { wkCookies in
+    let store = getWebViewCookieStore()
+    store.getAllCookies { wkCookies in
       let shared = HTTPCookieStorage.shared
       var synced = 0
       for cookie in wkCookies {
         shared.setCookie(cookie)
         synced += 1
       }
-      NSLog("[SmartEye] Synced \(synced) cookies to NSHTTPCookieStorage")
+      NSLog("[SmartEye] Synced \(synced) cookies from WebView to NSHTTPCookieStorage")
       completion(synced)
     }
   }
@@ -272,11 +281,9 @@ import AudioToolbox
   // MARK: - Cookie helpers
 
   private func getCookies(for url: String, result: @escaping FlutterResult) {
-    // Return ALL cookies — matching Android's CookieManager behavior.
-    // Domain filtering can exclude critical session cookies that the
-    // Dart HTTP client (NSURLSession) needs.
-    let store = WKWebsiteDataStore.default()
-    store.httpCookieStore.getAllCookies { cookies in
+    // Use the WebView's ACTUAL cookie store, not WKWebsiteDataStore.default()
+    let store = getWebViewCookieStore()
+    store.getAllCookies { cookies in
       let cookieStr = cookies.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
       result(cookieStr)
     }
