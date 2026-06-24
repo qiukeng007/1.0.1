@@ -252,32 +252,13 @@ import AudioToolbox
   // MARK: - Cookie helpers
 
   private func getCookies(for url: String, result: @escaping FlutterResult) {
-    guard let siteURL = URL(string: url), let host = siteURL.host else {
-      result("")
-      return
-    }
+    // Return ALL cookies — matching Android's CookieManager behavior.
+    // Domain filtering can exclude critical session cookies that the
+    // Dart HTTP client (NSURLSession) needs.
     let store = WKWebsiteDataStore.default()
     store.httpCookieStore.getAllCookies { cookies in
-      let matched = cookies.filter { cookie in
-        self.cookie(cookie, matchesHost: host)
-      }
-      let chosen = matched.isEmpty ? cookies : matched
-      let cookieStr = chosen.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
+      let cookieStr = cookies.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
       result(cookieStr)
     }
-  }
-
-  private func cookie(_ cookie: HTTPCookie, matchesHost host: String) -> Bool {
-    let domain = cookie.domain
-    if host == domain { return true }
-    if domain.hasPrefix(".") {
-      let rootDomain = String(domain.dropFirst())
-      if host == rootDomain { return true }
-      if host.hasSuffix(domain) { return true }
-      return false
-    }
-    if host.hasSuffix(".\(domain)") || host == domain { return true }
-    if domain.hasSuffix(".\(host)") { return true }
-    return false
   }
 }

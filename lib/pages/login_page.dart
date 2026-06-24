@@ -194,21 +194,40 @@ class _LoginPageState extends State<LoginPage> {
     _loggedIn = true;
 
     try {
-      String cookieStr = '';
+      // WKWebView may not have finished persisting cookies when
+      // onPageFinished fires — give it a moment to settle.
+      await Future.delayed(const Duration(seconds: 1));
+
+      // Collect from both sources: native WKHTTPCookieStore + JS document.cookie
+      String nativeCookies = '';
+      String jsCookies = '';
       try {
         const channel = MethodChannel('com.smarteye/cookies');
-        cookieStr = await channel.invokeMethod('getCookies', {
+        nativeCookies = await channel.invokeMethod('getCookies', {
           'url': widget.baseUrl,
         }) as String? ?? '';
       } catch (_) {}
+      try {
+        jsCookies = await _controller.runJavaScriptReturningResult('document.cookie') as String? ?? '';
+      } catch (_) {}
 
-      // Fallback to JS document.cookie
-      if (cookieStr.isEmpty) {
-        try {
-          final jsCookies = await _controller.runJavaScriptReturningResult('document.cookie') as String?;
-          cookieStr = jsCookies ?? '';
-        } catch (_) {}
+      // Merge and deduplicate by cookie name
+      final merged = <String, String>{};
+      for (final src in [nativeCookies, jsCookies]) {
+        for (final part in src.split(';')) {
+          final trimmed = part.trim();
+          final eq = trimmed.indexOf('=');
+          if (eq > 0) {
+            final name = trimmed.substring(0, eq).trim();
+            final value = trimmed.substring(eq + 1).trim();
+            if (name.isNotEmpty && value.isNotEmpty) {
+              merged[name] = value;
+            }
+          }
+        }
       }
+      final cookieStr = merged.entries.map((e) => '${e.key}=${e.value}').join('; ');
+      debugPrint('🍪 Cookies captured: native=${nativeCookies.length} JS=${jsCookies.length} merged=${cookieStr.length}');
 
       if (cookieStr.isNotEmpty) {
         final prefs = await SharedPreferences.getInstance();
@@ -224,6 +243,8 @@ class _LoginPageState extends State<LoginPage> {
             await StoreService.saveStores(widget.baseUrl, stores);
           }
         } catch (_) {}
+      } else {
+        debugPrint('⚠️ No cookies captured — session may not be established');
       }
 
       if (mounted) {
