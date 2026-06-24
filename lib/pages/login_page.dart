@@ -85,7 +85,7 @@ class _LoginPageState extends State<LoginPage> {
     }
   }
 
-  bool _shouldOverrideUrl(InAppWebViewController ctrl, NavigationAction action) {
+  Future<NavigationActionPolicy?> _shouldOverrideUrl(InAppWebViewController ctrl, NavigationAction action) async {
     final url = action.request.url?.toString() ?? '';
     debugPrint('🔀 $url');
 
@@ -93,12 +93,12 @@ class _LoginPageState extends State<LoginPage> {
     if (url.contains('UserLoginByWx')) {
       if (_wxCallbackSeen) {
         debugPrint('🛑 BLOCKED duplicate UserLoginByWx');
-        return true; // cancel
+        return NavigationActionPolicy.CANCEL;
       }
       _wxCallbackSeen = true;
       ctrl.evaluateJavascript(source: 'for(var i=1;i<99999;i++){clearInterval(i);clearTimeout(i);}');
     }
-    return false; // allow
+    return NavigationActionPolicy.ALLOW;
   }
 
   // ---- Polling ----
@@ -106,9 +106,9 @@ class _LoginPageState extends State<LoginPage> {
   void _startPolling() {
     _pollTimer?.cancel();
     _pollTimer = Timer.periodic(const Duration(seconds: 4), (_) async {
-      if (_loggedIn || _controller == null) return;
+      if (_loggedIn) return;
       try {
-        final cookies = await _controller!.getCookies(url: WebUri(widget.baseUrl));
+        final cookies = await CookieManager.instance().getCookies(url: WebUri(widget.baseUrl));
         if (cookies.isNotEmpty) { _stopPolling(); _onLoginSuccess(); }
       } catch (_) {}
     });
@@ -154,10 +154,10 @@ class _LoginPageState extends State<LoginPage> {
     try {
       await Future.delayed(const Duration(seconds: 2));
 
-      // Get cookies using InAppWebView's API (respects sharedCookiesEnabled)
+      // Get cookies via CookieManager (respects sharedCookiesEnabled on iOS)
       String cookieStr = '';
       try {
-        final cookies = await _controller!.getCookies(url: WebUri(widget.baseUrl));
+        final cookies = await CookieManager.instance().getCookies(url: WebUri(widget.baseUrl));
         cookieStr = cookies.map((c) => '${c.name}=${c.value}').join('; ');
       } catch (_) {}
       if (cookieStr.isEmpty) {
