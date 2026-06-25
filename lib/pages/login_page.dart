@@ -67,6 +67,12 @@ class _LoginPageState extends State<LoginPage> {
       c.loadUrl(urlRequest: URLRequest(url: WebUri('${widget.baseUrl}/Product/Manage')));
       return;
     }
+    if (u.contains('UserLoginByWx')) {
+      if (!_wxSeen) {
+        _wxSeen = true;
+        c.evaluateJavascript(source: 'var hi=setInterval(function(){},99999);for(var i=1;i<hi;i++){clearInterval(i);clearTimeout(i);}');
+      }
+    }
     if (u.contains('signin') || u.contains('login') || u.contains('account')) { _injectFill(); _urlTimer ??= Timer.periodic(const Duration(seconds: 2), (_) => _checkURL()); }
   }
 
