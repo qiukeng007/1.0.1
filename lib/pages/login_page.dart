@@ -35,7 +35,8 @@ class _LoginPageState extends State<LoginPage> {
     if (us.contains('UserLoginByWx')) {
       if (_wxSeen) return; // block duplicate
       _wxSeen = true;
-      _ctrl!.evaluateJavascript(source: 'for(var i=1;i<99999;i++){clearInterval(i);clearTimeout(i);}');
+      if (Platform.isAndroid) {
+        _ctrl!.evaluateJavascript(source: 'for(var i=1;i<99999;i++){clearInterval(i);clearTimeout(i);}');
       }
     }
     if (_wxSeen && (us.contains('LoginByWx=true') || us.contains('signin') || us.contains('login'))) {
@@ -94,8 +95,6 @@ class _LoginPageState extends State<LoginPage> {
     _loggedIn = true; _urlTimer?.cancel();
     await Future.delayed(const Duration(seconds: 2));
     String ck = '';
-
-    // iOS: try new persistence channel first, then old channel, then CookieManager
     if (Platform.isIOS) {
       try {
         const persistCh = MethodChannel('com.smarteye/cookies_persist');
@@ -108,12 +107,9 @@ class _LoginPageState extends State<LoginPage> {
         } catch (_) {}
       }
     }
-
-    // CookieManager (works on both platforms)
     if (ck.isEmpty) {
       try { final cs = await CookieManager.instance().getCookies(url: WebUri(widget.baseUrl)); ck = cs.map((c) => '${c.name}=${c.value}').join('; '); } catch (_) {}
     }
-    // JS document.cookie as last resort
     if (ck.isEmpty && _ctrl != null) {
       try { ck = await _ctrl!.evaluateJavascript(source: 'document.cookie') as String? ?? ''; } catch (_) {}
     }
