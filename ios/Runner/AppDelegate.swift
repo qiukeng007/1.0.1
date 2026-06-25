@@ -39,6 +39,9 @@ import WebKit
           return
         }
         self.getAllCookies(for: url, result: result)
+      case "syncPrefs":
+        UserDefaults.standard.synchronize()
+        result(true)
       case "restoreCookies":
         guard let cookieStr = call.arguments as? String, !cookieStr.isEmpty else {
           result(nil)

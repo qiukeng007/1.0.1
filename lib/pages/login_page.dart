@@ -133,6 +133,8 @@ class _LoginPageState extends State<LoginPage> {
     if (ck.isNotEmpty) {
       final p = await SharedPreferences.getInstance();
       await p.setString('cookie_${widget.baseUrl}|${widget.account}|${widget.cashierJobNumber}', ck);
+      // Force NSUserDefaults sync (iOS kill-proof)
+      try { const syncCh = MethodChannel('com.smarteye/cookies_persist'); await syncCh.invokeMethod('syncPrefs'); } catch (_) {}
       // Also persist to file (iOS NSUserDefaults may not flush on force-quit)
       try {
         final dir = await getApplicationDocumentsDirectory();
