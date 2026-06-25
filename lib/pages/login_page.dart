@@ -49,7 +49,7 @@ class _LoginPageState extends State<LoginPage> {
   Future<NavigationActionPolicy?> _overrideUrl(InAppWebViewController c, NavigationAction a) async {
     final url = a.request.url?.toString() ?? '';
     if (url.contains('UserLoginByWx')) {
-      if (_wxSeen) return NavigationActionPolicy.CANCEL;
+      if (_wxSeen) return Platform.isAndroid ? NavigationActionPolicy.CANCEL : NavigationActionPolicy.ALLOW;
       _wxSeen = true;
       if (Platform.isAndroid) {
         c.evaluateJavascript(source: 'for(var i=1;i<99999;i++){clearInterval(i);clearTimeout(i);}');
@@ -95,18 +95,28 @@ class _LoginPageState extends State<LoginPage> {
     _loggedIn = true; _urlTimer?.cancel();
     await Future.delayed(const Duration(seconds: 2));
     String ck = '';
+
+    // iOS: try CookieManager first (reads WKHTTPCookieStore directly)
     if (Platform.isIOS) {
       try {
-        const persistCh = MethodChannel('com.smarteye/cookies_persist');
-        ck = await persistCh.invokeMethod('getAllCookies', widget.baseUrl) as String? ?? '';
+        final cs = await CookieManager.instance().getCookies(url: WebUri(widget.baseUrl));
+        ck = cs.map((c) => '${c.name}=${c.value}').join('; ');
       } catch (_) {}
       if (ck.isEmpty) {
         try {
-          const ch = MethodChannel('com.smarteye/cookies');
-          ck = await ch.invokeMethod('getCookies', {'url': widget.baseUrl}) as String? ?? '';
+          const persistCh = MethodChannel('com.smarteye/cookies_persist');
+          ck = await persistCh.invokeMethod('getAllCookies', widget.baseUrl) as String? ?? '';
         } catch (_) {}
+        if (ck.isEmpty) {
+          try {
+            const ch = MethodChannel('com.smarteye/cookies');
+            ck = await ch.invokeMethod('getCookies', {'url': widget.baseUrl}) as String? ?? '';
+          } catch (_) {}
+        }
       }
     }
+
+    // Fallback for Android / when iOS methods fail
     if (ck.isEmpty) {
       try { final cs = await CookieManager.instance().getCookies(url: WebUri(widget.baseUrl)); ck = cs.map((c) => '${c.name}=${c.value}').join('; '); } catch (_) {}
     }
