@@ -82,9 +82,8 @@ class _LoginPageState extends State<LoginPage> {
 
     if (u.contains('signin') || u.contains('login') || u.contains('account')) {
       _injectAutoFill(ctrl);
-      Future.delayed(const Duration(seconds: 10), () {
-        if (mounted && !_loggedIn) _startPolling();
-      });
+      // Start polling immediately, don't wait
+      if (!_loggedIn) _startPolling();
     }
   }
 
@@ -120,12 +119,19 @@ class _LoginPageState extends State<LoginPage> {
       });
     }
     _urlTimer?.cancel();
-    _urlTimer = Timer.periodic(const Duration(seconds: 3), (_) async {
+    _urlTimer = Timer.periodic(const Duration(seconds: _wxCallbackSeen ? 1 : 3), (_) async {
       if (_loggedIn || _controller == null) return;
       try {
         final u = await _controller!.getUrl();
-        if (u != null && (u.toString().contains('/Product/Manage') || u.toString().contains('/Home'))) {
+        if (u == null) return;
+        final us = u.toString();
+        if (us.contains('/Product/Manage') || us.contains('/Home')) {
           _stopPolling(); _onLoginSuccess();
+        }
+        // After wx callback, aggressively re-check: if still on signin, force to target
+        if (_wxCallbackSeen && (us.contains('signin') || us.contains('login'))) {
+          _stopPolling();
+          _controller!.loadUrl(urlRequest: URLRequest(url: WebUri('${widget.baseUrl}/Product/Manage')));
         }
       } catch (_) {}
     });
@@ -190,6 +196,21 @@ class _LoginPageState extends State<LoginPage> {
       if (cookieStr.isNotEmpty) {
         final p = await SharedPreferences.getInstance();
         await p.setString('cookie_${widget.baseUrl}|${widget.account}|${widget.cashierJobNumber}', cookieStr);
+
+        // Also persist cookies into the system cookie store so NEXT
+        // WebView instance (from "re-login") picks them up automatically.
+        try {
+          final cookies = await CookieManager.instance().getCookies(url: WebUri(widget.baseUrl));
+          await CookieManager.instance().setCookie(
+            url: WebUri(widget.baseUrl),
+            name: '__session_check', value: '1', // dummy to test persistence
+          );
+          // Actually set all captured cookies for future WebViews
+          for (final c in cookies) {
+            try { await CookieManager.instance().setCookie(url: WebUri(widget.baseUrl), name: c.name, value: c.value); } catch (_) {}
+          }
+        } catch (_) {}
+
         try {
           final s = await StoreService.fetchStores(baseUrl: widget.baseUrl, cookie: cookieStr);
           if (s.isNotEmpty) await StoreService.saveStores(widget.baseUrl, s);
@@ -241,7 +262,8 @@ class _LoginPageState extends State<LoginPage> {
           ]),
         ),
         Expanded(child: InAppWebView(
-          initialUrlRequest: URLRequest(url: WebUri('${widget.baseUrl}/account/signin?ReturnUrl=%2fProduct%2fManage')),
+          // Try Product/Manage first — if session exists, loads directly
+          initialUrlRequest: URLRequest(url: WebUri('${widget.baseUrl}/Product/Manage')),
           initialSettings: InAppWebViewSettings(
             javaScriptEnabled: true,
             userAgent: _ua,
