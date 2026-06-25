@@ -137,7 +137,7 @@ class _LoginPageState extends State<LoginPage> {
       // Also persist to file (iOS NSUserDefaults may not flush on force-quit)
       try {
         final dir = await getApplicationDocumentsDirectory();
-        final cf = io.File('${dir.path}/pospal_cookie.txt');
+        final cf = File('${dir.path}/pospal_cookie.txt');
         await cf.writeAsString(ck, flush: true);
       } catch (_) {}
       try { final s = await StoreService.fetchStores(baseUrl: widget.baseUrl, cookie: ck); if (s.isNotEmpty) await StoreService.saveStores(widget.baseUrl, s); } catch (_) {}
