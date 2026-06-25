@@ -1,4 +1,4 @@
-import Flutter
+﻿import Flutter
 import UIKit
 import WebKit
 
@@ -10,15 +10,86 @@ import WebKit
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
+    // Register cookie persistence channel early, before any WebView is created
+    if let controller = window?.rootViewController as? FlutterViewController {
+      setupCookieChannel(controller)
+    }
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
-    // Register audio channels with the engine's binary messenger
-    // At this point window?.rootViewController should be a FlutterViewController
     if let controller = window?.rootViewController as? FlutterViewController {
       SmartEyePlugin.registerMessenger(controller.binaryMessenger)
+      setupCookieChannel(controller)
+    }
+  }
+
+  // MARK: - Cookie Persistence Channel
+
+  private func setupCookieChannel(_ controller: FlutterViewController) {
+    let channel = FlutterMethodChannel(
+      name: "com.smarteye/cookies_persist",
+      binaryMessenger: controller.binaryMessenger
+    )
+    channel.setMethodCallHandler { [weak self] (call, result) in
+      guard let self = self else { result(FlutterMethodNotImplemented); return }
+      switch call.method {
+      case "getAllCookies":
+        guard let url = call.arguments as? String, !url.isEmpty else {
+          result(FlutterError(code: "INVALID_ARG", message: "url required", details: nil))
+          return
+        }
+        self.getAllCookies(for: url, result: result)
+      case "restoreCookies":
+        guard let cookieStr = call.arguments as? String, !cookieStr.isEmpty else {
+          result(nil)
+          return
+        }
+        self.restoreCookies(cookieStr, result: result)
+      default:
+        result(FlutterMethodNotImplemented)
+      }
+    }
+  }
+
+  private func getAllCookies(for url: String, result: @escaping FlutterResult) {
+    WKWebsiteDataStore.default().httpCookieStore.getAllCookies { wkCookies in
+      let shared = HTTPCookieStorage.shared
+      for c in wkCookies {
+        shared.setCookie(c)
+      }
+      let s = wkCookies.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
+      result(s)
+    }
+  }
+
+  private func restoreCookies(_ cookieStr: String, result: @escaping FlutterResult) {
+    let baseHost = "pospal.cn"
+    let pairs = cookieStr.components(separatedBy: "; ")
+    let group = DispatchGroup()
+    for pair in pairs {
+      let parts = pair.components(separatedBy: "=")
+      guard parts.count >= 2 else { continue }
+      let name = parts[0].trimmingCharacters(in: .whitespaces)
+      let value = parts.dropFirst().joined(separator: "=").trimmingCharacters(in: .whitespaces)
+      guard !name.isEmpty, !value.isEmpty else { continue }
+      if let cookie = HTTPCookie(properties: [
+        .domain: baseHost,
+        .path: "/",
+        .name: name,
+        .value: value,
+        .secure: "TRUE",
+        .discard: "FALSE",
+      ]) {
+        group.enter()
+        WKWebsiteDataStore.default().httpCookieStore.setCookie(cookie) {
+          group.leave()
+        }
+      }
+    }
+    group.notify(queue: .main) {
+      result(true)
     }
   }
 
@@ -48,18 +119,5 @@ import WebKit
     for sub in view.subviews { if let found = findWKWebView(in: sub) { return found } }
     return nil
   }
-
-  // MARK: - Cookie helpers
-
-  private func getCookies(for url: String, result: @escaping FlutterResult) {
-    // sharedCookiesEnabled makes WKWebView use WKWebsiteDataStore.default()
-    // Read from there AND copy to NSHTTPCookieStorage (dart:io needs it).
-    WKWebsiteDataStore.default().httpCookieStore.getAllCookies { wkCookies in
-      // Sync to NSHTTPCookieStorage so dart:io HttpClient can use them
-      let shared = HTTPCookieStorage.shared
-      for c in wkCookies { shared.setCookie(c) }
-      let s = wkCookies.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
-      result(s)
-    }
-  }
 }
+
