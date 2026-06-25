@@ -287,18 +287,20 @@ class _LoginPageState extends State<LoginPage> {
             ],
           ]),
         ),
-        Expanded(child: _cookiesRestored ? InAppWebView(
-          initialUrlRequest: URLRequest(url: WebUri('${widget.baseUrl}/Product/Manage')),
-          initialSettings: InAppWebViewSettings(
-            javaScriptEnabled: true,
-            userAgent: _ua,
-            // KEY: share cookies with NSHTTPCookieStorage on iOS
-            sharedCookiesEnabled: true,
-          ),
-          onWebViewCreated: (ctrl) => _controller = ctrl,
-          onLoadStop: _onLoadStop,
-          shouldOverrideUrlLoading: _shouldOverrideUrl,
-        )) : const Center(child: CircularProgressIndicator()),
+        Expanded(child: _cookiesRestored
+          ? InAppWebView(
+              initialUrlRequest: URLRequest(url: WebUri('${widget.baseUrl}/Product/Manage')),
+              initialSettings: InAppWebViewSettings(
+                javaScriptEnabled: true,
+                userAgent: _ua,
+                sharedCookiesEnabled: true,
+              ),
+              onWebViewCreated: (ctrl) => _controller = ctrl,
+              onLoadStop: _onLoadStop,
+              shouldOverrideUrlLoading: _shouldOverrideUrl,
+            )
+          : const Center(child: CircularProgressIndicator()),
+        ),
       ]),
     );
   }
