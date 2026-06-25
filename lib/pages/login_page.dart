@@ -49,24 +49,13 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   Future<void> _restoreCookies() async {
-    // Restore saved cookies into CookieManager BEFORE WebView loads.
-    // With sharedCookiesEnabled, CookieManager persists to WKWebsiteDataStore.default(),
-    // which new WebViews read from.
-    final p = await SharedPreferences.getInstance();
-    final ck = p.getString('cookie_${widget.baseUrl}|${widget.account}|${widget.cashierJobNumber}') ?? '';
-    if (ck.isNotEmpty) {
-      for (final part in ck.split(';')) {
-        final eq = part.trim().indexOf('=');
-        if (eq > 0) {
-          final name = part.substring(0, eq).trim();
-          final value = part.substring(eq + 1).trim();
-          if (name.isNotEmpty && value.isNotEmpty) {
-            try { await CookieManager.instance().setCookie(url: WebUri(widget.baseUrl), name: name, value: value); } catch (_) {}
-          }
-        }
-      }
-    }
-    if (mounted) setState(() => _cookiesRestored = true); // trigger build
+    // iOS: sharedCookiesEnabled → WKWebsiteDataStore.default() persists cookies.
+    //   Don't inject anything — the WebView reads from the persistent store.
+    //   Injecting incomplete cookies from SharedPreferences (missing HttpOnly)
+    //   would OVERWRITE the persistent session cookie and break things.
+    // Android: CookieManager is system-level, cookies persist automatically.
+    //   Just mark as ready.
+    if (mounted) setState(() => _cookiesRestored = true);
   }
 
   @override
@@ -225,14 +214,16 @@ class _LoginPageState extends State<LoginPage> {
         final p = await SharedPreferences.getInstance();
         await p.setString('cookie_${widget.baseUrl}|${widget.account}|${widget.cashierJobNumber}', cookieStr);
 
-        // Set cookies in CookieManager for persistence across WebView instances
-        for (final part in cookieStr.split(';')) {
-          final eq = part.trim().indexOf('=');
-          if (eq > 0) {
-            final name = part.substring(0, eq).trim();
-            final value = part.substring(eq + 1).trim();
-            if (name.isNotEmpty && value.isNotEmpty) {
-              try { await CookieManager.instance().setCookie(url: WebUri(widget.baseUrl), name: name, value: value); } catch (_) {}
+        // Android: set in CookieManager for cross-WebView persistence
+        if (!Platform.isIOS) {
+          for (final part in cookieStr.split(';')) {
+            final eq = part.trim().indexOf('=');
+            if (eq > 0) {
+              final name = part.substring(0, eq).trim();
+              final value = part.substring(eq + 1).trim();
+              if (name.isNotEmpty && value.isNotEmpty) {
+                try { await CookieManager.instance().setCookie(url: WebUri(widget.baseUrl), name: name, value: value); } catch (_) {}
+              }
             }
           }
         }
