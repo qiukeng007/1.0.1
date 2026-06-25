@@ -2,7 +2,6 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:sherpa_onnx/sherpa_onnx.dart';
@@ -226,8 +225,7 @@ class SettingsPageState extends State<SettingsPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('系统配置', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600))),
-      body: Stack(children: [
-        SingleChildScrollView(
+      body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           _section('总店账号'),
@@ -317,7 +315,6 @@ class SettingsPageState extends State<SettingsPage> {
           )),
         ]),
       ),
-      ],), // Stack closing
     );
   }
 

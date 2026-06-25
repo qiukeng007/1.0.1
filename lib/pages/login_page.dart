@@ -146,7 +146,7 @@ class _LoginPageState extends State<LoginPage> {
       });
     }
     _urlTimer?.cancel();
-    _urlTimer = Timer.periodic(const Duration(seconds: _wxCallbackSeen ? 1 : 3), (_) async {
+    _urlTimer = Timer.periodic(Duration(seconds: _wxCallbackSeen ? 1 : 3), (_) async {
       if (_loggedIn || _controller == null) return;
       try {
         final u = await _controller!.getUrl();
