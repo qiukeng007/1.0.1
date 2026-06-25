@@ -42,6 +42,33 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   @override
+  void initState() {
+    super.initState();
+    _restoreCookies();
+  }
+
+  Future<void> _restoreCookies() async {
+    // Restore saved cookies into CookieManager BEFORE WebView loads.
+    // With sharedCookiesEnabled, CookieManager persists to WKWebsiteDataStore.default(),
+    // which new WebViews read from.
+    final p = await SharedPreferences.getInstance();
+    final ck = p.getString('cookie_${widget.baseUrl}|${widget.account}|${widget.cashierJobNumber}') ?? '';
+    if (ck.isNotEmpty) {
+      for (final part in ck.split(';')) {
+        final eq = part.trim().indexOf('=');
+        if (eq > 0) {
+          final name = part.substring(0, eq).trim();
+          final value = part.substring(eq + 1).trim();
+          if (name.isNotEmpty && value.isNotEmpty) {
+            try { await CookieManager.instance().setCookie(url: WebUri(widget.baseUrl), name: name, value: value); } catch (_) {}
+          }
+        }
+      }
+    }
+    if (mounted) setState(() {}); // trigger build
+  }
+
+  @override
   void dispose() { _stopPolling(); super.dispose(); }
 
   // ---- Navigation handling ----
@@ -197,19 +224,17 @@ class _LoginPageState extends State<LoginPage> {
         final p = await SharedPreferences.getInstance();
         await p.setString('cookie_${widget.baseUrl}|${widget.account}|${widget.cashierJobNumber}', cookieStr);
 
-        // Also persist cookies into the system cookie store so NEXT
-        // WebView instance (from "re-login") picks them up automatically.
-        try {
-          final cookies = await CookieManager.instance().getCookies(url: WebUri(widget.baseUrl));
-          await CookieManager.instance().setCookie(
-            url: WebUri(widget.baseUrl),
-            name: '__session_check', value: '1', // dummy to test persistence
-          );
-          // Actually set all captured cookies for future WebViews
-          for (final c in cookies) {
-            try { await CookieManager.instance().setCookie(url: WebUri(widget.baseUrl), name: c.name, value: c.value); } catch (_) {}
+        // Set cookies in CookieManager for persistence across WebView instances
+        for (final part in cookieStr.split(';')) {
+          final eq = part.trim().indexOf('=');
+          if (eq > 0) {
+            final name = part.substring(0, eq).trim();
+            final value = part.substring(eq + 1).trim();
+            if (name.isNotEmpty && value.isNotEmpty) {
+              try { await CookieManager.instance().setCookie(url: WebUri(widget.baseUrl), name: name, value: value); } catch (_) {}
+            }
           }
-        } catch (_) {}
+        }
 
         try {
           final s = await StoreService.fetchStores(baseUrl: widget.baseUrl, cookie: cookieStr);
