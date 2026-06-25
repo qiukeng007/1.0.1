@@ -31,6 +31,7 @@ class _LoginPageState extends State<LoginPage> {
   bool _loading = true;
   bool _loggedIn = false;
   bool _wxCallbackSeen = false;
+  bool _cookiesRestored = false;
   Timer? _pollTimer;
   Timer? _urlTimer;
 
@@ -65,7 +66,7 @@ class _LoginPageState extends State<LoginPage> {
         }
       }
     }
-    if (mounted) setState(() {}); // trigger build
+    if (mounted) setState(() => _cookiesRestored = true); // trigger build
   }
 
   @override
@@ -286,8 +287,7 @@ class _LoginPageState extends State<LoginPage> {
             ],
           ]),
         ),
-        Expanded(child: InAppWebView(
-          // Try Product/Manage first — if session exists, loads directly
+        Expanded(child: _cookiesRestored ? InAppWebView(
           initialUrlRequest: URLRequest(url: WebUri('${widget.baseUrl}/Product/Manage')),
           initialSettings: InAppWebViewSettings(
             javaScriptEnabled: true,
@@ -298,7 +298,7 @@ class _LoginPageState extends State<LoginPage> {
           onWebViewCreated: (ctrl) => _controller = ctrl,
           onLoadStop: _onLoadStop,
           shouldOverrideUrlLoading: _shouldOverrideUrl,
-        )),
+        )) : const Center(child: CircularProgressIndicator()),
       ]),
     );
   }
