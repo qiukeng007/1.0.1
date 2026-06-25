@@ -101,26 +101,25 @@ class _LoginPageState extends State<LoginPage> {
   Future<void> _onSuccess() async {
     if (_loggedIn) return;
     _loggedIn = true; _urlTimer?.cancel();
-    await Future.delayed(const Duration(seconds: 2));
+    // Poll for cookies (WKWebView writes them asynchronously, up to 8 attempts = 4s)
     String ck = '';
-
-    // iOS: try CookieManager first (reads WKHTTPCookieStore directly)
-    if (Platform.isIOS) {
+    for (int attempt = 0; attempt < 8 && ck.isEmpty; attempt++) {
+      await Future.delayed(const Duration(milliseconds: 500));
       try {
         final cs = await CookieManager.instance().getCookies(url: WebUri(widget.baseUrl));
         ck = cs.map((c) => '${c.name}=${c.value}').join('; ');
       } catch (_) {}
-      if (ck.isEmpty) {
+      if (ck.isEmpty && Platform.isIOS) {
         try {
           const persistCh = MethodChannel('com.smarteye/cookies_persist');
           ck = await persistCh.invokeMethod('getAllCookies', widget.baseUrl) as String? ?? '';
         } catch (_) {}
-        if (ck.isEmpty) {
-          try {
-            const ch = MethodChannel('com.smarteye/cookies');
-            ck = await ch.invokeMethod('getCookies', {'url': widget.baseUrl}) as String? ?? '';
-          } catch (_) {}
-        }
+      }
+      if (ck.isEmpty && Platform.isIOS) {
+        try {
+          const ch = MethodChannel('com.smarteye/cookies');
+          ck = await ch.invokeMethod('getCookies', {'url': widget.baseUrl}) as String? ?? '';
+        } catch (_) {}
       }
     }
 
