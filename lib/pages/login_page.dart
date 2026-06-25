@@ -1,9 +1,11 @@
 ﻿import 'dart:async';
-import 'dart:io' show Platform;
+import 'dart:io' show Platform, File;
+import 'package:path_provider/path_provider.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:path_provider/path_provider.dart';
 import '../utils/constants.dart';
 import '../services/store_service.dart';
 
@@ -132,6 +134,12 @@ class _LoginPageState extends State<LoginPage> {
     if (ck.isNotEmpty) {
       final p = await SharedPreferences.getInstance();
       await p.setString('cookie_${widget.baseUrl}|${widget.account}|${widget.cashierJobNumber}', ck);
+      // Also persist to file (iOS NSUserDefaults may not flush on force-quit)
+      try {
+        final dir = await getApplicationDocumentsDirectory();
+        final cf = io.File('${dir.path}/pospal_cookie.txt');
+        await cf.writeAsString(ck, flush: true);
+      } catch (_) {}
       try { final s = await StoreService.fetchStores(baseUrl: widget.baseUrl, cookie: ck); if (s.isNotEmpty) await StoreService.saveStores(widget.baseUrl, s); } catch (_) {}
     }
     if (mounted) { Navigator.of(context).pop(true); }
