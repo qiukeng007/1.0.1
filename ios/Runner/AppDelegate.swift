@@ -17,6 +17,9 @@ import AVFoundation
     try? session.setActive(true)
     if let controller = window?.rootViewController as? FlutterViewController {
       setupAudioChannel(controller)
+      DispatchQueue.main.async { [weak self] in
+        self?.setupAudioChannel(controller)
+      }
     }
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
@@ -25,7 +28,10 @@ import AVFoundation
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
     if let controller = window?.rootViewController as? FlutterViewController {
       SmartEyePlugin.registerMessenger(controller.binaryMessenger)
-      setupAudioChannel(controller)
+      // Register audio after SmartEyePlugin to ensure our handler wins
+      DispatchQueue.main.async { [weak self] in
+        self?.setupAudioChannel(controller)
+      }
     }
   }
 
