@@ -447,7 +447,7 @@ class SettingsPageState extends State<SettingsPage> {
   bool _voiceTesting = false;
   String? _voiceTestResult;
   String? _voiceTestWavPath;
-  static const _audioChannel = MethodChannel(Platform.isIOS ? 'com.smarteye/audio_ios' : 'com.smarteye/audio');
+  static final _audioChannel = MethodChannel(Platform.isIOS ? 'com.smarteye/audio_ios' : 'com.smarteye/audio');
 
   Future<void> _startVoiceTest() async {
     if (_voiceTesting) return;
@@ -922,3 +922,4 @@ class SettingsPageState extends State<SettingsPage> {
     ]));
   }
 }
+
