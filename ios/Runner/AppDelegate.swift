@@ -1,31 +1,47 @@
-﻿  private func cookieFile(_ key: String) -> URL {
-    let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-    return docs.appendingPathComponent(key + ".cookie")
+﻿import Flutter
+import UIKit
+import WebKit
+
+@main
+@objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
+  private var webViewUserScriptInstalled = false
+
+  override func application(
+    _ application: UIApplication,
+    didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
+  ) -> Bool {
+    return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 
-  private func saveAtomic(key: String, value: String, result: @escaping FlutterResult) {
-    let url = cookieFile(key)
-    let data = value.data(using: .utf8)!
-    do {
-      try data.write(to: url, options: .atomic)
-      result(true)
-    } catch {
-      result(false)
+  func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
+    GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
+    if let controller = window?.rootViewController as? FlutterViewController {
+      SmartEyePlugin.registerMessenger(controller.binaryMessenger)
     }
   }
 
-  private func loadAtomic(key: String, result: @escaping FlutterResult) {
-    let url = cookieFile(key)
-    guard FileManager.default.fileExists(atPath: url.path) else {
-      result(nil)
-      return
-    }
-    do {
-      let value = try String(contentsOf: url, encoding: .utf8)
-      result(value)
-    } catch {
-      result(nil)
+  private func installWindowOpenOverrideIfNeeded() {
+    guard !webViewUserScriptInstalled else { return }
+    guard let rootView = window?.rootViewController?.view else { return }
+    if let webView = findWKWebView(in: rootView) {
+      let script = """
+        window.open=function(u,t,f){\
+          if(u&&typeof u==='string'&&u!==''&&u!=='about:blank'){\
+            try{window.location.href=u;}catch(e){}\
+            try{window.location.replace(u);}catch(e){}\
+          }\
+          return window;\
+        };
+        """
+      let userScript = WKUserScript(source: script, injectionTime: .atDocumentStart, forMainFrameOnly: false)
+      webView.configuration.userContentController.addUserScript(userScript)
+      webViewUserScriptInstalled = true
     }
   }
 
-  
+  private func findWKWebView(in view: UIView) -> WKWebView? {
+    if let wv = view as? WKWebView { return wv }
+    for sub in view.subviews { if let found = findWKWebView(in: sub) { return found } }
+    return nil
+  }
+}

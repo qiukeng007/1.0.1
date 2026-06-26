@@ -1,8 +1,4 @@
-﻿import 'dart:async';
-import 'dart:io' show File;
-import 'package:flutter/material.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+﻿import 'package:flutter/material.dart';
 import 'utils/constants.dart';
 import 'pages/home_page.dart';
 
@@ -23,56 +19,7 @@ class SmartEyeApp extends StatelessWidget {
         elevatedButtonTheme: ElevatedButtonThemeData(style: ElevatedButton.styleFrom(shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppConstants.radiusSm)), padding: const EdgeInsets.symmetric(vertical: 14), textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600))),
         bottomNavigationBarTheme: const BottomNavigationBarThemeData(type: BottomNavigationBarType.fixed, selectedItemColor: AppConstants.primaryColor, unselectedItemColor: AppConstants.textSecondary),
       ),
-      home: const _DebugOverlay(child: HomePage()),
+      home: const HomePage(),
     );
   }
-}
-
-class _DebugOverlay extends StatefulWidget {
-  final Widget child;
-  const _DebugOverlay({required this.child});
-  @override State<_DebugOverlay> createState() => _DebugOverlayState();
-}
-
-class _DebugOverlayState extends State<_DebugOverlay> {
-  String _txt = 'loading...';
-  Timer? _t;
-  @override void initState() { super.initState(); _refresh(); _t = Timer.periodic(const Duration(seconds: 3), (_) => _refresh()); }
-  @override void dispose() { _t?.cancel(); super.dispose(); }
-
-  Future<void> _refresh() async {
-    final sb = StringBuffer();
-    try {
-      final dir = await getApplicationDocumentsDirectory();
-      final prefs = await SharedPreferences.getInstance();
-      sb.writeln('auth=' + (prefs.getBool('sys_auth_v3') == true ? 'YES' : 'NO'));
-      final bu = prefs.getString('login_base_url') ?? '';
-      final ac = prefs.getString('login_account') ?? '';
-      final em = prefs.getString('login_employee') ?? '';
-      sb.writeln('url=' + bu);
-      sb.writeln('acct=' + ac + ' emp=' + em);
-      final fullUrl = 'https://' + bu.replaceAll('https://', '').replaceAll('http://', '');
-      final ckKey = 'cookie_' + fullUrl + '|' + ac + '|' + em;
-      final spCk = prefs.getString(ckKey);
-      sb.writeln('SPrefCK=' + (spCk != null ? 'len=' + spCk.length.toString() : 'NULL'));
-      final m = File(dir.path + '/cookie_debug.txt');
-      if (await m.exists()) { sb.writeln('DEBUG=' + await m.readAsString()); } else { sb.writeln('DEBUG=missing'); }
-      final f = File(dir.path + '/pospal_cookie.txt');
-      if (await f.exists()) {
-        final len = await f.length();
-        final c = await f.readAsString();
-        final first = c.length > 30 ? c.substring(0, 30) : c;
-        sb.writeln('CFILE len=' + len.toString() + ' first=' + first);
-      } else { sb.writeln('CFILE=missing'); }
-    } catch (e) { sb.writeln('ERR=' + e.toString()); }
-    if (mounted) setState(() => _txt = sb.toString());
-  }
-
-  @override Widget build(BuildContext ctx) => Stack(children: [
-    widget.child,
-    Positioned(bottom: 50, left: 4, right: 4,
-      child: GestureDetector(onTap: _refresh,
-        child: Container(padding: const EdgeInsets.all(6), decoration: BoxDecoration(color: const Color(0xDD000000), borderRadius: BorderRadius.circular(6)),
-          child: Text(_txt, style: const TextStyle(fontSize: 10, color: Color(0xFF00FF00), fontFamily: 'monospace', height: 1.4)))))
-  ]);
 }

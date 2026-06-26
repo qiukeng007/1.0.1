@@ -1,7 +1,5 @@
 ﻿import 'dart:async';
-import 'dart:io' show Platform, File;
-import 'package:path_provider/path_provider.dart';
-import 'package:path_provider/path_provider.dart';
+import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
@@ -26,20 +24,16 @@ class _LoginPageState extends State<LoginPage> {
 
   @override void dispose() { _urlTimer?.cancel(); super.dispose(); }
 
-  // ---- URL monitoring ----
   Future<void> _checkURL() async {
     if (_loggedIn || _ctrl == null) return;
     final u = await _ctrl!.getUrl(); if (u == null) return;
     final us = u.toString();
     setState(() => _loading = false);
-
     if (us.contains('/Product/Manage') || us.contains('/Home')) { _onSuccess(); return; }
     if (us.contains('UserLoginByWx')) {
-      if (_wxSeen) return; // block duplicate
+      if (_wxSeen) return;
       _wxSeen = true;
-      if (Platform.isAndroid) {
-        _ctrl!.evaluateJavascript(source: 'for(var i=1;i<99999;i++){clearInterval(i);clearTimeout(i);}');
-      }
+      _ctrl!.evaluateJavascript(source: 'var hi=setInterval(function(){},99999);for(var i=1;i<hi;i++){clearInterval(i);clearTimeout(i);}');
     }
     if (_wxSeen && (us.contains('LoginByWx=true') || us.contains('signin') || us.contains('login'))) {
       _ctrl!.loadUrl(urlRequest: URLRequest(url: WebUri('${widget.baseUrl}/Product/Manage')));
@@ -53,9 +47,7 @@ class _LoginPageState extends State<LoginPage> {
     if (url.contains('UserLoginByWx')) {
       if (_wxSeen) return Platform.isAndroid ? NavigationActionPolicy.CANCEL : NavigationActionPolicy.ALLOW;
       _wxSeen = true;
-      if (Platform.isAndroid) {
-        c.evaluateJavascript(source: 'for(var i=1;i<99999;i++){clearInterval(i);clearTimeout(i);}');
-      }
+      c.evaluateJavascript(source: 'var hi=setInterval(function(){},99999);for(var i=1;i<hi;i++){clearInterval(i);clearTimeout(i);}');
     }
     return NavigationActionPolicy.ALLOW;
   }
@@ -65,20 +57,19 @@ class _LoginPageState extends State<LoginPage> {
     final u = url.toString();
     setState(() => _loading = false);
     if (u.contains('/Product/Manage') || u.contains('/Home')) { _onSuccess(); return; }
-    if (_wxSeen && (u.contains('LoginByWx=true') || u.contains('signin') || u.contains('login'))) {
-      c.loadUrl(urlRequest: URLRequest(url: WebUri('${widget.baseUrl}/Product/Manage')));
-      return;
-    }
     if (u.contains('UserLoginByWx')) {
       if (!_wxSeen) {
         _wxSeen = true;
         c.evaluateJavascript(source: 'var hi=setInterval(function(){},99999);for(var i=1;i<hi;i++){clearInterval(i);clearTimeout(i);}');
       }
     }
+    if (_wxSeen && (u.contains('LoginByWx=true') || u.contains('signin') || u.contains('login'))) {
+      c.loadUrl(urlRequest: URLRequest(url: WebUri('${widget.baseUrl}/Product/Manage')));
+      return;
+    }
     if (u.contains('signin') || u.contains('login') || u.contains('account')) { _injectFill(); _urlTimer ??= Timer.periodic(const Duration(seconds: 2), (_) => _checkURL()); }
   }
 
-  // ---- Auto-fill ----
   Future<void> _injectFill() async {
     if (_ctrl == null) return;
     await _ctrl!.evaluateJavascript(source: '''
@@ -87,7 +78,7 @@ class _LoginPageState extends State<LoginPage> {
         setTimeout(function(){
           var j=document.getElementById('txt_cashierJobName');if(j){j.value='${widget.cashierJobNumber}';j.dispatchEvent(new Event('input',{bubbles:true}));j.dispatchEvent(new Event('change',{bubbles:true}));}
           var pw=document.querySelectorAll('input[type="password"]');for(var i=0;i<pw.length;i++){pw[i].value='${widget.password}';pw[i].dispatchEvent(new Event('input',{bubbles:true}));pw[i].dispatchEvent(new Event('change',{bubbles:true}));}
-          var a=document.getElementById('txt_userName')||document.querySelector('input[placeholder*="账号"]');if(a){a.value='${widget.account}';a.dispatchEvent(new Event('input',{bubbles:true}));a.dispatchEvent(new Event('change',{bubbles:true}));}
+          var a=document.getElementById('txt_userName')||document.querySelector('input[placeholder*="\u8d26\u53f7"]');if(a){a.value='${widget.account}';a.dispatchEvent(new Event('input',{bubbles:true}));a.dispatchEvent(new Event('change',{bubbles:true}));}
           setTimeout(function(){
             var btn=document.querySelector('button[type="submit"]')||document.querySelector('input[type="submit"]')||document.querySelector('button.btn-primary')||document.querySelector('a.btn-primary')||document.querySelector('button[class*="login"]')||document.querySelector('button[class*="submit"]')||document.querySelector('a[class*="login"]');
             if(btn)btn.click();else{var fs=document.querySelectorAll('form');for(var f=0;f<fs.length;f++)try{fs[f].submit()}catch(e){}}
@@ -97,13 +88,12 @@ class _LoginPageState extends State<LoginPage> {
     ''');
   }
 
-  // ---- Success ----
   Future<void> _onSuccess() async {
     if (_loggedIn) return;
     _loggedIn = true; _urlTimer?.cancel();
-    // Poll for cookies (WKWebView writes them asynchronously, up to 8 attempts = 4s)
+    // Poll for cookies (WKWebView writes them asynchronously)
     String ck = '';
-    for (int attempt = 0; attempt < 8 && ck.isEmpty; attempt++) {
+    for (int attempt = 0; attempt < 6 && ck.isEmpty; attempt++) {
       await Future.delayed(const Duration(milliseconds: 500));
       try {
         final cs = await CookieManager.instance().getCookies(url: WebUri(widget.baseUrl));
@@ -111,43 +101,17 @@ class _LoginPageState extends State<LoginPage> {
       } catch (_) {}
       if (ck.isEmpty && Platform.isIOS) {
         try {
-          const persistCh = MethodChannel('com.smarteye/cookies_persist');
-          ck = await persistCh.invokeMethod('getAllCookies', widget.baseUrl) as String? ?? '';
-        } catch (_) {}
-      }
-      if (ck.isEmpty && Platform.isIOS) {
-        try {
           const ch = MethodChannel('com.smarteye/cookies');
           ck = await ch.invokeMethod('getCookies', {'url': widget.baseUrl}) as String? ?? '';
         } catch (_) {}
       }
-    }
-
-    // Fallback for Android / when iOS methods fail
-    if (ck.isEmpty) {
-      try { final cs = await CookieManager.instance().getCookies(url: WebUri(widget.baseUrl)); ck = cs.map((c) => '${c.name}=${c.value}').join('; '); } catch (_) {}
     }
     if (ck.isEmpty && _ctrl != null) {
       try { ck = await _ctrl!.evaluateJavascript(source: 'document.cookie') as String? ?? ''; } catch (_) {}
     }
     if (ck.isNotEmpty) {
       final p = await SharedPreferences.getInstance();
-      await p.setString('cookie_${widget.baseUrl}|${widget.account}|${widget.cashierJobNumber}', ck);;
-      // Write to file (survives iOS force-quit)
-      try {
-        final docsDir = await getApplicationDocumentsDirectory();
-        final cf = File('${docsDir.path}/pospal_cookie.txt');
-        await cf.writeAsString(ck, flush: true);
-        final mf = File('${docsDir.path}/cookie_debug.txt');
-        final now = DateTime.now();
-        await mf.writeAsString('SAVE_OK|len=' + ck.length.toString() + '|time=' + now.toString(), flush: true);
-      } catch (_) {}
-      // Atomic native file write (survives iOS force-quit)
-      try {
-        const atomCh = MethodChannel('com.smarteye/cookies_persist');
-        await atomCh.invokeMethod('saveAtomic', {'key': '|', 'value': ck});
-      } catch (_) {}
-      // Force NSUserDefaults sync (iOS kill-proof)
+      await p.setString('cookie_${widget.baseUrl}|${widget.account}|${widget.cashierJobNumber}', ck);
       try { final s = await StoreService.fetchStores(baseUrl: widget.baseUrl, cookie: ck); if (s.isNotEmpty) await StoreService.saveStores(widget.baseUrl, s); } catch (_) {}
     }
     if (mounted) { Navigator.of(context).pop(true); }
@@ -157,17 +121,17 @@ class _LoginPageState extends State<LoginPage> {
   Widget build(BuildContext context) => Scaffold(
     backgroundColor: AppConstants.bgColor,
     appBar: AppBar(
-      title: const Text('微信扫码登录', style: TextStyle(fontSize: 16)),
+      title: const Text('\u5fae\u4fe1\u626b\u7801\u767b\u5f55', style: TextStyle(fontSize: 16)),
       actions: [if (_loading) const Padding(padding: EdgeInsets.only(right: 16), child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)))],
     ),
     body: Column(children: [
       Container(width: double.infinity, padding: const EdgeInsets.all(14), color: AppConstants.primaryColor.withValues(alpha: 0.05),
         child: Column(children: [
-          if (_loading) const Text('⏳ 正在加载…', style: TextStyle(fontSize: 13, color: AppConstants.textSecondary))
+          if (_loading) const Text('\u23f3 \u6b63\u5728\u52a0\u8f7d\u2026', style: TextStyle(fontSize: 13, color: AppConstants.textSecondary))
           else ...[
-            const Text('📸 请截图后用微信扫一扫验证', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: AppConstants.primaryColor)),
+            const Text('\ud83d\udcf1 \u8bf7\u622a\u56fe\u540e\u7528\u5fae\u4fe1\u626b\u4e00\u626b\u9a8c\u8bc1', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: AppConstants.primaryColor)),
             const SizedBox(height: 4),
-            const Text('微信 → 扫一扫 → 右下角相册 → 选择截图', style: TextStyle(fontSize: 12, color: AppConstants.textSecondary)),
+            const Text('\u5fae\u4fe1 \u2192 \u626b\u4e00\u626b \u2192 \u53f3\u4e0b\u89d2\u76f8\u518c \u2192 \u9009\u62e9\u622a\u56fe', style: TextStyle(fontSize: 12, color: AppConstants.textSecondary)),
           ],
         ]),
       ),
