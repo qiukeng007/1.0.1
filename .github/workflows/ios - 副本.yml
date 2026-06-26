@@ -1,4 +1,4 @@
-﻿name: iOS Auto Build
+name: iOS Auto Build
 
 on:
   push:
@@ -17,19 +17,20 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
       
-      - name: Set up Flutter
+      - name: 设置 Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
-          cache: false
+          cache: true
           
-      - name: Flutter pub get
+      - name: Flutter 准备依赖
         run: |
           flutter clean
           flutter pub get
 
-      - name: Force rebuild Podfile
+      - name: 🛠️ 暴力重建无暇版 Podfile (强锁配置)
         run: |
+          echo "=== 覆写标准 Podfile ==="
           rm -f ios/Podfile
           cat << 'EOF' > ios/Podfile
           platform :ios, '15.2'
@@ -61,7 +62,60 @@ jobs:
           end
           EOF
 
-      - name: Fix DefaultCamera source patch
+      - name: 🚑 强制重置 AppDelegate (含 Cookie 通道)
+        run: |
+          cat << 'SWIFTEOF' > ios/Runner/AppDelegate.swift
+          import UIKit
+          import Flutter
+          import WebKit
+
+          @main
+          @objc class AppDelegate: FlutterAppDelegate {
+            override func application(
+              _ application: UIApplication,
+              didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
+            ) -> Bool {
+              // Cookie channel — iOS equivalent of Android CookieManager
+              if let controller = window?.rootViewController as? FlutterViewController {
+                let channel = FlutterMethodChannel(name: "com.smarteye/cookies", binaryMessenger: controller.binaryMessenger)
+                channel.setMethodCallHandler { (call, result) in
+                  if call.method == "getCookies" {
+                    guard let args = call.arguments as? [String: Any],
+                          let url = args["url"] as? String else {
+                      result("")
+                      return
+                    }
+                    self.getCookies(for: url, result: result)
+                  } else {
+                    result(FlutterMethodNotImplemented)
+                  }
+                }
+              }
+              GeneratedPluginRegistrant.register(with: self)
+              return super.application(application, didFinishLaunchingWithOptions: launchOptions)
+            }
+
+            private func getCookies(for url: String, result: @escaping FlutterResult) {
+              guard let siteURL = URL(string: url) else {
+                result("")
+                return
+              }
+              WKWebsiteDataStore.default().httpCookieStore.getAllCookies { cookies in
+                var allCookies: [HTTPCookie] = []
+                for cookie in cookies {
+                  if let host = siteURL.host, host.contains(cookie.domain.replacingOccurrences(of: ".", with: "")) || cookie.domain.contains(host) {
+                    allCookies.append(cookie)
+                  }
+                }
+                if allCookies.isEmpty { allCookies = cookies }
+                let cookieStr = allCookies.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
+                result(cookieStr)
+              }
+            }
+          }
+          SWIFTEOF
+
+      - name: 🛠️ 修复 DefaultCamera 源码补丁
         run: |
           find /Users/runner/.pub-cache/ -name "DefaultCamera.swift" 2>/dev/null | while read -r target_file; do
             if ! grep -q "extension AVCaptureSession" "$target_file"; then
@@ -70,20 +124,23 @@ jobs:
             fi
           done
 
-      - name: Build iOS (no codesign)
+      - name: ⚡ Build Standard iOS Payload (带自动排错)
         run: |
-          echo "Building..."
+          echo "开始构建，日志将同时输出并保存..."
           set -o pipefail
+          # 使用 tee 保存日志，如果失败，自动 grep 关键报错行
           flutter build ios --release --no-codesign --verbose 2>&1 | tee build_log.txt || {
             echo "========================================"
-            echo "BUILD FAILED!"
+            echo "❌ 构建失败！以下是提取的关键错误信息："
             echo "========================================"
+            # 过滤出包含 Error/Fail/Fatal 的关键行
             grep -iE "error:|fatal|fail|exception" build_log.txt | tail -n 50
             echo "========================================"
+            echo "请检查以上错误信息。"
             exit 1
           }
 
-      - name: Package IPA
+      - name: 📦 组装 IPA 包
         run: |
           rm -rf final_zip && mkdir -p final_zip/Payload
           APP_PATH=$(find build/ios -name "Runner.app" -type d | head -n 1)
@@ -91,7 +148,7 @@ jobs:
             cp -r "$APP_PATH" final_zip/Payload/
             cd final_zip && zip -r -y -q ready-to-sign.ipa Payload
           else
-            echo "ERROR: Runner.app not found" && exit 1
+            echo "❌ 找不到 Runner.app" && exit 1
           fi
 
       - name: Upload Artifact
