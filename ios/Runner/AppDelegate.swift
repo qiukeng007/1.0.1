@@ -27,7 +27,6 @@ import AVFoundation
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
     if let controller = window?.rootViewController as? FlutterViewController {
-      SmartEyePlugin.registerMessenger(controller.binaryMessenger)
       // Register audio after SmartEyePlugin to ensure our handler wins
       DispatchQueue.main.async { [weak self] in
         self?.setupAudioChannel(controller)
