@@ -1,4 +1,4 @@
-import 'dart:async';
+﻿import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
@@ -1642,7 +1642,7 @@ class _ResultSheetState extends State<ResultSheet> with TickerProviderStateMixin
   int _voicePointerId = -1; // track the pointer that started recording
   String? _currentWavPath;
   late final AnimationController _voicePulseCtrl;
-  static const _audioChannel = MethodChannel('com.smarteye/audio');
+  static final _audioChannel = MethodChannel(Platform.isIOS ? 'com.smarteye/audio_ios' : 'com.smarteye/audio');
   static const _audioPlayChannel = MethodChannel('com.smarteye/audio_play');
 
   /// Pre-load model path eagerly so press→record is instant
