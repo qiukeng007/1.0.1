@@ -24,6 +24,32 @@ class _LoginPageState extends State<LoginPage> {
 
   @override void dispose() { _urlTimer?.cancel(); super.dispose(); }
 
+  
+  Future<void> _seedCookies() async {
+    if (!Platform.isIOS) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final ck = prefs.getString('cookie_${widget.baseUrl}|${widget.account}|${widget.cashierJobNumber}');
+      if (ck == null || ck.isEmpty) return;
+      final parts = ck.split('; ');
+      for (final p in parts) {
+        final idx = p.indexOf('=');
+        if (idx <= 0) continue;
+        final name = p.substring(0, idx).trim();
+        final value = p.substring(idx + 1).trim();
+        if (name.isEmpty || value.isEmpty) continue;
+        try {
+          await CookieManager.instance().setCookie(
+            url: WebUri(widget.baseUrl),
+            name: name,
+            value: value,
+            path: '/',
+            domain: Uri.parse(widget.baseUrl).host,
+          );
+        } catch (_) {}
+      }
+    } catch (_) {}
+  }
   Future<void> _checkURL() async {
     if (_loggedIn || _ctrl == null) return;
     final u = await _ctrl!.getUrl(); if (u == null) return;
@@ -138,7 +164,7 @@ class _LoginPageState extends State<LoginPage> {
       Expanded(child: InAppWebView(
         initialUrlRequest: URLRequest(url: WebUri('${widget.baseUrl}/Product/Manage')),
         initialSettings: InAppWebViewSettings(javaScriptEnabled: true, userAgent: _ua, sharedCookiesEnabled: true),
-        onWebViewCreated: (c) => _ctrl = c,
+        onWebViewCreated: (c) { _ctrl = c; _seedCookies(); },
         onLoadStop: _onLoadStop,
         shouldOverrideUrlLoading: _overrideUrl,
       )),
