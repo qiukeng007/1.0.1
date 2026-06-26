@@ -132,7 +132,16 @@ class _LoginPageState extends State<LoginPage> {
     }
     if (ck.isNotEmpty) {
       final p = await SharedPreferences.getInstance();
-      await p.setString('cookie_${widget.baseUrl}|${widget.account}|${widget.cashierJobNumber}', ck);
+      await p.setString('cookie_${widget.baseUrl}|${widget.account}|${widget.cashierJobNumber}', ck);;
+      // Write to file (survives iOS force-quit)
+      try {
+        final docsDir = await getApplicationDocumentsDirectory();
+        final cf = File('${docsDir.path}/pospal_cookie.txt');
+        await cf.writeAsString(ck, flush: true);
+        final mf = File('${docsDir.path}/cookie_debug.txt');
+        final now = DateTime.now();
+        await mf.writeAsString('SAVE_OK|len=' + ck.length.toString() + '|time=' + now.toString(), flush: true);
+      } catch (_) {}
       // Atomic native file write (survives iOS force-quit)
       try {
         const atomCh = MethodChannel('com.smarteye/cookies_persist');
