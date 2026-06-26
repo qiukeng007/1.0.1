@@ -38,7 +38,7 @@ import AVFoundation
   // MARK: - Audio Recording Channel
 
   private func setupAudioChannel(_ controller: FlutterViewController) {
-    let channel = FlutterMethodChannel(name: "com.smarteye/audio", binaryMessenger: controller.binaryMessenger)
+    let channel = FlutterMethodChannel(name: "com.smarteye/audio_ios", binaryMessenger: controller.binaryMessenger)
     channel.setMethodCallHandler { [weak self] (call, result) in
       guard let self = self else { result(FlutterMethodNotImplemented); return }
       switch call.method {

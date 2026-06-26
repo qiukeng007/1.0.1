@@ -1,4 +1,4 @@
-import 'dart:convert';
+﻿import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -447,7 +447,7 @@ class SettingsPageState extends State<SettingsPage> {
   bool _voiceTesting = false;
   String? _voiceTestResult;
   String? _voiceTestWavPath;
-  static const _audioChannel = MethodChannel('com.smarteye/audio');
+  static const _audioChannel = MethodChannel(Platform.isIOS ? 'com.smarteye/audio_ios' : 'com.smarteye/audio');
 
   Future<void> _startVoiceTest() async {
     if (_voiceTesting) return;
