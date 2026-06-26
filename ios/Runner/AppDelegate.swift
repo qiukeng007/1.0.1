@@ -1,10 +1,10 @@
-﻿import Flutter
-import UIKit
+﻿import UIKit
+import Flutter
 import WebKit
 import AVFoundation
 
 @main
-@objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
+@objc class AppDelegate: FlutterAppDelegate {
   private var webViewUserScriptInstalled = false
   private var audioRecorder: AVAudioRecorder?
 
@@ -15,26 +15,15 @@ import AVFoundation
     let session = AVAudioSession.sharedInstance()
     try? session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
     try? session.setActive(true)
+    
+    GeneratedPluginRegistrant.register(with: self)
+    
     if let controller = window?.rootViewController as? FlutterViewController {
       setupAudioChannel(controller)
-      DispatchQueue.main.async { [weak self] in
-        self?.setupAudioChannel(controller)
-      }
     }
+    
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
-
-  func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
-    GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
-    if let controller = window?.rootViewController as? FlutterViewController {
-      // Register audio after SmartEyePlugin to ensure our handler wins
-      DispatchQueue.main.async { [weak self] in
-        self?.setupAudioChannel(controller)
-      }
-    }
-  }
-
-  // MARK: - Audio Recording Channel
 
   private func setupAudioChannel(_ controller: FlutterViewController) {
     let channel = FlutterMethodChannel(name: "com.smarteye/audio_ios", binaryMessenger: controller.binaryMessenger)
@@ -47,42 +36,32 @@ import AVFoundation
           result(FlutterError(code: "INVALID_ARG", message: "path required", details: nil))
           return
         }
-        self.startRecording(path: path, result: result)
+        let url = URL(fileURLWithPath: path)
+        let settings: [String: Any] = [
+          AVFormatIDKey: Int(kAudioFormatLinearPCM),
+          AVSampleRateKey: 16000.0,
+          AVNumberOfChannelsKey: 1,
+          AVLinearPCMBitDepthKey: 16,
+          AVLinearPCMIsFloatKey: false,
+          AVLinearPCMIsBigEndianKey: false,
+          AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue,
+        ]
+        do {
+          self.audioRecorder = try AVAudioRecorder(url: url, settings: settings)
+          self.audioRecorder?.record()
+          result(true)
+        } catch {
+          result(FlutterError(code: "RECORD_FAIL", message: error.localizedDescription, details: nil))
+        }
       case "stopRecord":
-        self.stopRecording(result: result)
+        self.audioRecorder?.stop()
+        self.audioRecorder = nil
+        result(true)
       default:
         result(FlutterMethodNotImplemented)
       }
     }
   }
-
-  private func startRecording(path: String, result: @escaping FlutterResult) {
-    let url = URL(fileURLWithPath: path)
-    let settings: [String: Any] = [
-      AVFormatIDKey: Int(kAudioFormatLinearPCM),
-      AVSampleRateKey: 16000.0,
-      AVNumberOfChannelsKey: 1,
-      AVLinearPCMBitDepthKey: 16,
-      AVLinearPCMIsFloatKey: false,
-      AVLinearPCMIsBigEndianKey: false,
-      AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue,
-    ]
-    do {
-      audioRecorder = try AVAudioRecorder(url: url, settings: settings)
-      audioRecorder?.record()
-      result(true)
-    } catch {
-      result(FlutterError(code: "RECORD_FAIL", message: error.localizedDescription, details: nil))
-    }
-  }
-
-  private func stopRecording(result: @escaping FlutterResult) {
-    audioRecorder?.stop()
-    audioRecorder = nil
-    result(true)
-  }
-
-  // MARK: - WKUserScript for window.open override
 
   private func installWindowOpenOverrideIfNeeded() {
     guard !webViewUserScriptInstalled else { return }
