@@ -135,10 +135,10 @@ class _LoginPageState extends State<LoginPage> {
       Expanded(child: InAppWebView(
         initialUrlRequest: URLRequest(url: WebUri('${widget.baseUrl}/Product/Manage')),
         initialSettings: InAppWebViewSettings(javaScriptEnabled: true, userAgent: _ua, sharedCookiesEnabled: true),
-        initialUserScripts: {
-          UserScript(source: "window.open=function(u,t,f){if(u&&typeof u==='string'&&u!==''&&u!=='about:blank'){window.location.href=u;}return window;};", injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START),
-        },
         onWebViewCreated: (c) { _ctrl = c; _seedCookies(); },
+        onPageCommitVisible: (c, url) {
+          c.evaluateJavascript(source: "window.open=function(u,t,f){if(u&&typeof u==='string'&&u!==''&&u!=='about:blank'){window.location.href=u;}return window;};");
+        },
         onLoadStop: _onLoadStop,
         shouldOverrideUrlLoading: _overrideUrl,
       )),
