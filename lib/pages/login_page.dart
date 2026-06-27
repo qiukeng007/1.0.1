@@ -30,6 +30,7 @@ class _LoginPageState extends State<LoginPage> {
     setState(() => _loading = false);
     if (u.contains('/Product/Manage') || u.contains('/Home')) { _onSuccess(); return; }
     if (u.contains('signin') || u.contains('login') || u.contains('account')) { _injectFill(); _urlTimer ??= Timer.periodic(const Duration(seconds: 2), (_) => _checkURL()); }
+    c.evaluateJavascript(source: '''window.open=function(u,t,f){if(u&&typeof u==='string'&&u!==''&&u!=='about:blank'){window.location.href=u;}return window;};''');
   }
 
   Future<void> _checkURL() async {
