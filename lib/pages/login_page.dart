@@ -1,4 +1,5 @@
 ﻿import 'dart:async';
+import 'dart:collection';
 import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -16,37 +17,19 @@ class LoginPage extends StatefulWidget {
 class _LoginPageState extends State<LoginPage> {
   InAppWebViewController? _ctrl;
   bool _loading = true, _loggedIn = false;
-  Timer? _urlTimer;
 
   static String get _ua => Platform.isIOS
       ? 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'
       : 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36';
 
-  @override void dispose() { _urlTimer?.cancel(); super.dispose(); }
+  @override void dispose() { super.dispose(); }
 
   void _onLoadStop(InAppWebViewController c, Uri? url) {
     if (_loggedIn || url == null) return;
     final u = url.toString();
     setState(() => _loading = false);
     if (u.contains('/Product/Manage') || u.contains('/Home')) { _onSuccess(); return; }
-    if (u.contains('signin') || u.contains('login') || u.contains('account')) { _injectFill(); _urlTimer ??= Timer.periodic(const Duration(seconds: 2), (_) => _checkURL()); }
-    c.evaluateJavascript(source: '''window.open=function(u,t,f){if(u&&typeof u==='string'&&u!==''&&u!=='about:blank'){window.location.href=u;}return window;};''');
-  }
-
-  Future<void> _checkURL() async {
-    if (_loggedIn || _ctrl == null) return;
-    final u = await _ctrl!.getUrl(); if (u == null) return;
-    final us = u.toString();
-    if (us.contains('/Product/Manage') || us.contains('/Home')) { _onSuccess(); return; }
-    if (us.contains('signin') || us.contains('login') || us.contains('account')) _injectFill();
-  }
-
-  Future<NavigationActionPolicy?> _overrideUrl(InAppWebViewController c, NavigationAction a) async {
-    final url = a.request.url?.toString() ?? '';
-    if (Platform.isAndroid && url.contains('UserLoginByWx') && url != a.request.url?.toString()) {
-      return NavigationActionPolicy.CANCEL;
-    }
-    return NavigationActionPolicy.ALLOW;
+    if (u.contains('signin') || u.contains('login') || u.contains('account')) _injectFill();
   }
 
   Future<void> _injectFill() async {
@@ -69,7 +52,7 @@ class _LoginPageState extends State<LoginPage> {
 
   Future<void> _onSuccess() async {
     if (_loggedIn) return;
-    _loggedIn = true; _urlTimer?.cancel();
+    _loggedIn = true;
     String ck = '';
     for (int attempt = 0; attempt < 6 && ck.isEmpty; attempt++) {
       await Future.delayed(const Duration(milliseconds: 500));
@@ -136,12 +119,11 @@ class _LoginPageState extends State<LoginPage> {
       Expanded(child: InAppWebView(
         initialUrlRequest: URLRequest(url: WebUri('${widget.baseUrl}/Product/Manage')),
         initialSettings: InAppWebViewSettings(javaScriptEnabled: true, userAgent: _ua, sharedCookiesEnabled: true),
+        initialUserScripts: UnmodifiableListView<UserScript>([
+          UserScript(source: "window.open=function(u,t,f){if(u&&typeof u==='string'&&u!==''&&u!=='about:blank'){window.location.href=u;}return window;};", injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START),
+        ]),
         onWebViewCreated: (c) { _ctrl = c; _seedCookies(); },
-        onPageCommitVisible: (c, url) {
-          c.evaluateJavascript(source: "window.open=function(u,t,f){if(u&&typeof u==='string'&&u!==''&&u!=='about:blank'){window.location.href=u;}return window;};");
-        },
         onLoadStop: _onLoadStop,
-        shouldOverrideUrlLoading: _overrideUrl,
       )),
     ]),
   );
