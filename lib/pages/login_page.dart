@@ -15,7 +15,7 @@ class LoginPage extends StatefulWidget {
 
 class _LoginPageState extends State<LoginPage> {
   InAppWebViewController? _ctrl;
-  bool _loading = true, _loggedIn = false, _wxSeen = false;
+  bool _loading = true, _loggedIn = false;
   Timer? _urlTimer;
 
   static String get _ua => Platform.isIOS
@@ -24,76 +24,28 @@ class _LoginPageState extends State<LoginPage> {
 
   @override void dispose() { _urlTimer?.cancel(); super.dispose(); }
 
-  
-  Future<void> _seedCookies() async {
-    if (!Platform.isIOS) return;
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final ck = prefs.getString('cookie_${widget.baseUrl}|${widget.account}|${widget.cashierJobNumber}');
-      if (ck == null || ck.isEmpty) return;
-      final parts = ck.split('; ');
-      for (final p in parts) {
-        final idx = p.indexOf('=');
-        if (idx <= 0) continue;
-        final name = p.substring(0, idx).trim();
-        final value = p.substring(idx + 1).trim();
-        if (name.isEmpty || value.isEmpty) continue;
-        try {
-          await CookieManager.instance().setCookie(
-            url: WebUri(widget.baseUrl),
-            name: name,
-            value: value,
-            path: '/',
-            domain: Uri.parse(widget.baseUrl).host,
-          );
-        } catch (_) {}
-      }
-    } catch (_) {}
-  }
-  Future<void> _checkURL() async {
-    if (_loggedIn || _ctrl == null) return;
-    final u = await _ctrl!.getUrl(); if (u == null) return;
-    final us = u.toString();
-    setState(() => _loading = false);
-    if (us.contains('/Product/Manage') || us.contains('/Home')) { _onSuccess(); return; }
-    if (us.contains('UserLoginByWx')) {
-      if (_wxSeen) return;
-      _wxSeen = true;
-      _ctrl!.evaluateJavascript(source: 'var hi=setInterval(function(){},99999);for(var i=1;i<hi;i++){clearInterval(i);clearTimeout(i);}');
-    }
-    if (_wxSeen && (us.contains('LoginByWx=true') || us.contains('signin') || us.contains('login'))) {
-      _ctrl!.loadUrl(urlRequest: URLRequest(url: WebUri('${widget.baseUrl}/Product/Manage')));
-      return;
-    }
-    if (us.contains('signin') || us.contains('login') || us.contains('account')) _injectFill();
-  }
-
-  Future<NavigationActionPolicy?> _overrideUrl(InAppWebViewController c, NavigationAction a) async {
-    final url = a.request.url?.toString() ?? '';
-    if (url.contains('UserLoginByWx')) {
-      if (_wxSeen) return Platform.isAndroid ? NavigationActionPolicy.CANCEL : NavigationActionPolicy.ALLOW;
-      _wxSeen = true;
-      c.evaluateJavascript(source: 'var hi=setInterval(function(){},99999);for(var i=1;i<hi;i++){clearInterval(i);clearTimeout(i);}');
-    }
-    return NavigationActionPolicy.ALLOW;
-  }
-
   void _onLoadStop(InAppWebViewController c, Uri? url) {
     if (_loggedIn || url == null) return;
     final u = url.toString();
     setState(() => _loading = false);
     if (u.contains('/Product/Manage') || u.contains('/Home')) { _onSuccess(); return; }
-    if (u.contains('UserLoginByWx')) {
-      if (!_wxSeen) {
-        _wxSeen = true;
-        c.evaluateJavascript(source: 'var hi=setInterval(function(){},99999);for(var i=1;i<hi;i++){clearInterval(i);clearTimeout(i);}');
-      }
-    }
-    if (_wxSeen && (u.contains('LoginByWx=true') || u.contains('signin') || u.contains('login'))) {
-      c.loadUrl(urlRequest: URLRequest(url: WebUri('${widget.baseUrl}/Product/Manage')));
-      return;
-    }
     if (u.contains('signin') || u.contains('login') || u.contains('account')) { _injectFill(); _urlTimer ??= Timer.periodic(const Duration(seconds: 2), (_) => _checkURL()); }
+  }
+
+  Future<void> _checkURL() async {
+    if (_loggedIn || _ctrl == null) return;
+    final u = await _ctrl!.getUrl(); if (u == null) return;
+    final us = u.toString();
+    if (us.contains('/Product/Manage') || us.contains('/Home')) { _onSuccess(); return; }
+    if (us.contains('signin') || us.contains('login') || us.contains('account')) _injectFill();
+  }
+
+  Future<NavigationActionPolicy?> _overrideUrl(InAppWebViewController c, NavigationAction a) async {
+    final url = a.request.url?.toString() ?? '';
+    if (Platform.isAndroid && url.contains('UserLoginByWx') && url != a.request.url?.toString()) {
+      return NavigationActionPolicy.CANCEL;
+    }
+    return NavigationActionPolicy.ALLOW;
   }
 
   Future<void> _injectFill() async {
@@ -117,7 +69,6 @@ class _LoginPageState extends State<LoginPage> {
   Future<void> _onSuccess() async {
     if (_loggedIn) return;
     _loggedIn = true; _urlTimer?.cancel();
-    // Poll for cookies (WKWebView writes them asynchronously)
     String ck = '';
     for (int attempt = 0; attempt < 6 && ck.isEmpty; attempt++) {
       await Future.delayed(const Duration(milliseconds: 500));
@@ -143,6 +94,26 @@ class _LoginPageState extends State<LoginPage> {
     if (mounted) { Navigator.of(context).pop(true); }
   }
 
+  Future<void> _seedCookies() async {
+    if (!Platform.isIOS) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final ck = prefs.getString('cookie_${widget.baseUrl}|${widget.account}|${widget.cashierJobNumber}');
+      if (ck == null || ck.isEmpty) return;
+      for (final p in ck.split('; ')) {
+        final idx = p.indexOf('='); if (idx <= 0) continue;
+        try {
+          await CookieManager.instance().setCookie(
+            url: WebUri(widget.baseUrl),
+            name: p.substring(0, idx).trim(),
+            value: p.substring(idx + 1).trim(),
+            path: '/', domain: Uri.parse(widget.baseUrl).host,
+          );
+        } catch (_) {}
+      }
+    } catch (_) {}
+  }
+
   @override
   Widget build(BuildContext context) => Scaffold(
     backgroundColor: AppConstants.bgColor,
@@ -164,6 +135,9 @@ class _LoginPageState extends State<LoginPage> {
       Expanded(child: InAppWebView(
         initialUrlRequest: URLRequest(url: WebUri('${widget.baseUrl}/Product/Manage')),
         initialSettings: InAppWebViewSettings(javaScriptEnabled: true, userAgent: _ua, sharedCookiesEnabled: true),
+        initialUserScripts: {
+          UserScript(source: "window.open=function(u,t,f){if(u&&typeof u==='string'&&u!==''&&u!=='about:blank'){window.location.href=u;}return window;};", injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START),
+        },
         onWebViewCreated: (c) { _ctrl = c; _seedCookies(); },
         onLoadStop: _onLoadStop,
         shouldOverrideUrlLoading: _overrideUrl,
